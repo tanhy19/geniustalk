@@ -1,18 +1,18 @@
 {
-  "accuracy": 0.9812,
-  "precision": 0.9776,
-  "recall": 0.8792,
-  "f1_score": 0.9258,
+  "accuracy": 0.983,
+  "precision": 0.9851,
+  "recall": 0.8859,
+  "f1_score": 0.9329,
   "confusion_matrix": [
     [
-      963,
-      3
+      964,
+      2
     ],
     [
-      18,
-      131
+      17,
+      132
     ]
   ],
   "total_test_samples": 1115,
-  "correct_predictions": 1094
+  "correct_predictions": 1096
 }

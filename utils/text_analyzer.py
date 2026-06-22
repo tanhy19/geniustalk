@@ -14,48 +14,35 @@ import pickle
 # ─────────────────────────────────────────
 
 ML_MODEL_PATH = "models/scam_classifier.pkl"
-_ml_model = None
+_ml_model     = None
 
 def load_ml_model():
-    """
-    Loads the trained ML model from disk.
-    Only loads once — reuses same instance after that.
-    """
+    """Loads trained ML model from disk. Only loads once."""
     global _ml_model
     if _ml_model is None:
         if os.path.exists(ML_MODEL_PATH):
             with open(ML_MODEL_PATH, 'rb') as f:
                 _ml_model = pickle.load(f)
-            print("ML model loaded successfully.")
-        else:
-            print("Warning: ML model not found. Using keyword detection only.")
     return _ml_model
 
 # Load model when module is imported
 load_ml_model()
 
-
 def get_ml_score(text):
     """
-    Gets scam probability from the trained ML model.
-    Returns a score 0-100.
-    0   = definitely safe
-    100 = definitely scam
+    Gets scam probability from trained ML model.
+    Returns score 0-100 or None if model unavailable.
     """
     model = load_ml_model()
-
     if model is None:
-        return None  # Model not available, fall back to keywords only
-
+        return None
     try:
-        # Get probability scores for [safe, scam]
         proba      = model.predict_proba([text])[0]
-        scam_proba = proba[1]  # probability of being scam
-        ml_score   = int(scam_proba * 100)
-        return ml_score
+        scam_proba = proba[1]
+        return int(scam_proba * 100)
     except Exception:
         return None
-    
+
 # ─────────────────────────────────────────
 # SCAM KEYWORD DATABASE
 # ─────────────────────────────────────────
@@ -251,7 +238,48 @@ def scan_urls(text):
         "url_score"       : url_score,
     }
 
+def scan_patterns(text):
+    """
+    Detects suspicious patterns like phone numbers,
+    account numbers, IC numbers in scam context.
+    """
+    score  = 0
+    flags  = []
 
+    # Malaysian phone numbers in suspicious context
+    phone_pattern = r'(?:0|\+?60)1[0-9]-?\d{7,8}'
+    phones = re.findall(phone_pattern, text)
+    if phones:
+        score += 10 * len(phones)
+        flags.append(f"Phone number detected: {phones[0]}")
+
+    # Account numbers (suspicious if long digit strings)
+    account_pattern = r'\b\d{10,16}\b'
+    accounts = re.findall(account_pattern, text)
+    if accounts:
+        score += 15
+        flags.append("Possible account/card number detected")
+
+    # IC number pattern
+    ic_pattern = r'\b\d{6}-?\d{2}-?\d{4}\b'
+    ics = re.findall(ic_pattern, text)
+    if ics:
+        score += 25
+        flags.append("IC number pattern detected")
+
+    # Excessive money amounts
+    money_pattern = r'RM\s*\d+(?:,\d{3})*(?:\.\d{2})?'
+    money = re.findall(money_pattern, text, re.IGNORECASE)
+    if len(money) >= 2:
+        score += 15
+        flags.append(f"Multiple money amounts detected: {money[:2]}")
+    elif money:
+        score += 5
+
+    return {
+        "pattern_score": min(score, 30),
+        "pattern_flags": flags
+    }
 # ─────────────────────────────────────────
 # MAIN ANALYSIS FUNCTION
 # ─────────────────────────────────────────
@@ -288,14 +316,18 @@ def analyze_text(text, source="direct"):
         }
 
 # ── Run all analyzers ──
-    keyword_result = scan_keywords(text)
-    url_result     = scan_urls(text)
-    tone_result    = check_message_tone(text)
-    ml_score       = get_ml_score(text)
+    keyword_result  = scan_keywords(text)
+    url_result      = scan_urls(text)
+    tone_result     = check_message_tone(text)
+    pattern_result  = scan_patterns(text)
+    ml_score        = get_ml_score(text)
 
     # ── Combine scores ──
-    # If ML model is available, use it as primary signal (50%)
-    # Keywords, URLs, tone fill the remaining 50%
+    # Keywords are the strongest signal (60%)
+    # URLs are a strong signal (25%)
+    # Tone adds extra weight (15%)
+    # ── Combine scores ──
+
     if ml_score is not None:
         raw_score = (
             ml_score                        * 0.50 +
@@ -304,12 +336,12 @@ def analyze_text(text, source="direct"):
             tone_result["tone_score"]       * 0.10
         )
     else:
-        # Fallback: keyword only mode
         raw_score = (
             keyword_result["keyword_score"] * 0.60 +
             url_result["url_score"]         * 0.25 +
             tone_result["tone_score"]       * 0.15
         )
+
 
     # Bonus: 2+ high risk keywords alone is already very suspicious
     if len(keyword_result["matched_high"]) >= 2:
@@ -369,6 +401,7 @@ def analyze_text(text, source="direct"):
         "risk_label"       : risk_label,
         "is_scam"          : is_scam,
         "ml_score"         : ml_score,
+        "pattern_flags"    : pattern_result["pattern_flags"],
         "matched_keywords" : {
             "high"  : keyword_result["matched_high"],
             "medium": keyword_result["matched_medium"],
