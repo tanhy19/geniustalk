@@ -1,10 +1,12 @@
 flask==3.1.0
 gunicorn==23.0.0
 requests==2.32.3
-scikit-learn==1.8.0
-pandas==2.3.0
-numpy==2.4.6
-Pillow==11.2.1
+scikit-learn==1.6.1
+pandas==2.2.3
+numpy==1.26.4
+Pillow==10.3.0
 pytesseract==0.3.10
 pyzbar==0.1.9
 langdetect==1.0.9
+deep-translator==1.11.4
+python-magic==0.4.27
