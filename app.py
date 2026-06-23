@@ -548,7 +548,7 @@ def get_alerts():
     return make_response(True, get_active_alerts())
 
 
-@app.route('/awareness/alert/<int:alert_id>/deactivate', methods=['POST'])
+@app.route('/awareness/alert/<string:alert_id>/deactivate', methods=['POST'])
 def deactivate_alert_endpoint(alert_id):
     """Deactivates a security alert."""
     deactivate_alert(alert_id)
@@ -575,7 +575,7 @@ def create_drill():
     return make_response(True, {"message": "Phishing drill created"})
 
 
-@app.route('/awareness/drill/<int:drill_id>/result', methods=['POST'])
+@app.route('/awareness/drill/<string:drill_id>/result', methods=['POST'])
 def submit_drill_result(drill_id):
     """Records user response to a phishing drill."""
     data = request.get_json()

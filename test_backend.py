@@ -41,7 +41,7 @@ def post_json(endpoint, body):
         r = requests.post(
             f"{BASE_URL}{endpoint}",
             json=body,
-            timeout=15
+            timeout=60
         )
         print_result(r)
     except requests.exceptions.ConnectionError:

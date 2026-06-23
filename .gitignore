@@ -1,20 +1,16 @@
- # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-*.pkl
-*.db
 
-# Datasets 
-datasets/
-models/
-
-# Temp files
 temp_uploads/
 test_files/
 
-# Environment
 .env
 venv/
+
+genius_talk.db
+*.db
+
+firebase_key.json.json
