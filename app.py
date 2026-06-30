@@ -1,6 +1,5 @@
 # app.py
 # GeniusTalk Complete Backend Server v2.0
-# Combined Modules + Language Translation
 
 from flask import Flask, request, jsonify
 import os
@@ -355,8 +354,11 @@ def report_message_endpoint():
     data = request.get_json()
     if not data:
         return make_response(False, error="Missing data", status_code=400)
+    if not data.get("message_sender"):
+        return make_response(False, error="message_sender is required", status_code=400)
     report_message(
         reported_by     = data.get("reported_by", "anonymous"),
+        message_sender  = data.get("message_sender"),
         message_content = data.get("message_content", ""),
         reason          = data.get("reason", ""),
         risk_score      = data.get("risk_score", 0)
@@ -388,12 +390,13 @@ def ban_user_endpoint():
     if not data:
         return make_response(False, error="Missing data", status_code=400)
     ban_user(
-        user_id    = data.get("user_id", ""),
-        ban_type   = data.get("ban_type", "temporary"),
-        reason     = data.get("reason", ""),
-        device_id  = data.get("device_id", None),
-        banned_by  = data.get("banned_by", "admin"),
-        expires_at = data.get("expires_at", None)
+        user_id           = data.get("user_id", ""),
+        ban_type          = data.get("ban_type", "temporary"),
+        reason            = data.get("reason", ""),
+        device_id         = data.get("device_id", None),
+        banned_by         = data.get("banned_by", "admin"),
+        expires_at        = data.get("expires_at", None),
+        source_report_id  = data.get("source_report_id", None)
     )
     return make_response(True, {"message": "User banned successfully"})
 
@@ -448,22 +451,22 @@ def admin_history():
 def admin_stats():
     """Returns enriched system health stats."""
     base = get_system_stats() or {}
-    # Get live counts from Firestore directly
     try:
-        reports  = firebase.get_collection("reports") or []
-        bans     = firebase.get_collection("bans") or []
-        flagged  = get_all_flagged() or []
-        active_bans = [b for b in bans if b.get("is_active", True)]
+        pending      = get_pending_reports()
+        report_count = len(pending.get('reported_messages', [])) + len(pending.get('reported_users', []))
+        active_bans  = get_banned_users()
+        flagged      = get_all_flagged()
         base.update({
             "status"       : "running",
             "version"      : "2.0.0",
             "uptime"       : "Live on Render",
-            "total_reports": len(reports),
+            "total_reports": base.get("total_reported", report_count),
             "active_bans"  : len(active_bans),
             "flagged_count": len(flagged),
         })
     except Exception as e:
-        base["status"] = "running"
+        print(f"admin_stats enrich error: {e}")
+        base["status"]  = "running"
         base["version"] = "2.0.0"
     return make_response(True, base)
 
@@ -495,20 +498,26 @@ def get_trust_score(user_id):
 
 @app.route('/admin/report/update', methods=['POST'])
 def update_report_status_endpoint():
-    """Admin updates report status to reviewed or dismissed."""
+    """Admin updates report status to reviewed/dismissed/actioned."""
     data = request.get_json()
     if not data:
         return make_response(False, error="Missing data", status_code=400)
+
     report_id   = data.get("report_id", "")
+    report_type = data.get("report_type", "")  # 'message' or 'user'
     status      = data.get("status", "reviewed")
     reviewed_by = data.get("reviewed_by", "admin")
+
     if not report_id:
         return make_response(False, error="report_id required", status_code=400)
+
+    collection = "reported_users" if report_type == "user" else "reported_messages"
+
     try:
-        result = firebase.update_document("reports", report_id, {
+        result = firebase.update_document(collection, report_id, {
             "status"     : status,
             "reviewed_by": reviewed_by,
-            "reviewed_at": datetime.now(timezone.utc).isoformat()
+            "reviewed_at": datetime.now().isoformat()
         })
         if result:
             return make_response(True, {"updated": report_id, "status": status})
@@ -625,7 +634,7 @@ def update_drill_endpoint(drill_id):
     if not fields:
         return make_response(False, error="No fields to update", status_code=400)
     try:
-        ok = firebase.update_document("drills", drill_id, fields)
+        ok = firebase.update_document("phishing_drills", drill_id, fields)
         if ok:
             return make_response(True, {"updated": drill_id})
         return make_response(False, error="Update failed")
@@ -637,7 +646,7 @@ def update_drill_endpoint(drill_id):
 def delete_drill_endpoint(drill_id):
     """Admin deletes a drill."""
     try:
-        ok = firebase.delete_document("drills", drill_id)
+        ok = firebase.delete_document("phishing_drills", drill_id)
         if ok:
             return make_response(True, {"deleted": drill_id})
         return make_response(False, error="Delete failed")
@@ -688,7 +697,7 @@ def update_tip_endpoint(tip_id):
     if not fields:
         return make_response(False, error="No fields to update", status_code=400)
     try:
-        ok = firebase.update_document("tips", tip_id, fields)
+        ok = firebase.update_document("safety_tips", tip_id, fields)
         if ok:
             return make_response(True, {"updated": tip_id})
         return make_response(False, error="Update failed")
@@ -700,7 +709,7 @@ def update_tip_endpoint(tip_id):
 def delete_tip_endpoint(tip_id):
     """Admin deletes a tip."""
     try:
-        ok = firebase.delete_document("tips", tip_id)
+        ok = firebase.delete_document("safety_tips", tip_id)
         if ok:
             return make_response(True, {"deleted": tip_id})
         return make_response(False, error="Delete failed")

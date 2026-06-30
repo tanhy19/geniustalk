@@ -96,13 +96,14 @@ def log_text_scan(text_input, analysis_result):
                 keywords.get('medium', [])
             )
             add_document('flagged_items', {
-                'scan_type'       : 'text',
-                'risk_score'      : analysis_result.get('risk_score', 0),
-                'risk_label'      : analysis_result.get('risk_label', 'HIGH'),
-                'summary'         : analysis_result.get('summary', ''),
-                'matched_keywords': json.dumps(all_keywords),
-                'flagged_at'      : datetime.now().isoformat()
-            })
+                    'scan_type'       : 'text',
+                    'text'            : text_input,
+                    'risk_score'      : analysis_result.get('risk_score', 0),
+                    'risk_label'      : analysis_result.get('risk_label', 'HIGH'),
+                    'summary'         : analysis_result.get('summary', ''),
+                    'matched_keywords': json.dumps(all_keywords),
+                    'flagged_at'      : datetime.now().isoformat()
+                })
 
         _update_stats(is_flagged, is_blocked)
 
@@ -129,15 +130,16 @@ def log_file_scan(filename, inspection_result):
 
         if is_flagged or is_blocked:
             add_document('flagged_items', {
-                'scan_type' : 'file',
-                'risk_score': inspection_result.get('risk_score', 0),
-                'risk_label': inspection_result.get('risk_label', 'LOW'),
-                'summary'   : inspection_result.get('reason', ''),
-                'matched_keywords': json.dumps(
-                    [inspection_result.get('extension', '')]
-                ),
-                'flagged_at': datetime.now().isoformat()
-            })
+                    'scan_type'       : 'file',
+                    'text'            : f"File: {filename} — {inspection_result.get('reason', '')}",
+                    'risk_score'      : inspection_result.get('risk_score', 0),
+                    'risk_label'      : inspection_result.get('risk_label', 'LOW'),
+                    'summary'         : inspection_result.get('reason', ''),
+                    'matched_keywords' : json.dumps(
+                        [inspection_result.get('extension', '')]
+                    ),
+                    'flagged_at'      : datetime.now().isoformat()
+                })
 
         _update_stats(is_flagged, is_blocked)
 
@@ -170,13 +172,14 @@ def log_image_scan(filename, ocr_result):
                 keywords.get('medium', [])
             )
             add_document('flagged_items', {
-                'scan_type'       : 'image',
-                'risk_score'      : analysis.get('risk_score', 0),
-                'risk_label'      : analysis.get('risk_label', 'HIGH'),
-                'summary'         : analysis.get('summary', ''),
-                'matched_keywords': json.dumps(all_keywords),
-                'flagged_at'      : datetime.now().isoformat()
-            })
+                    'scan_type'       : 'image',
+                    'text'            : ocr_result.get('extracted_text', ''),
+                    'risk_score'      : analysis.get('risk_score', 0),
+                    'risk_label'      : analysis.get('risk_label', 'HIGH'),
+                    'summary'         : analysis.get('summary', ''),
+                    'matched_keywords' : json.dumps(all_keywords),
+                    'flagged_at'      : datetime.now().isoformat()
+                })
 
         _update_stats(is_flagged, is_blocked)
 
@@ -210,11 +213,16 @@ def log_qr_scan(qr_result):
 # ─────────────────────────────────────────
 
 def report_message(reported_by, message_content,
-                   reason, risk_score=0):
-    """Logs a reported message."""
+                   reason, message_sender=None, risk_score=0):
+    """
+    Logs a reported message.
+    message_sender = the user who SENT the suspicious message (the one who may get banned).
+    reported_by    = the user who FILED the report.
+    """
     try:
         add_document('reported_messages', {
             'reported_by'    : reported_by,
+            'message_sender' : message_sender or 'unknown',
             'message_content': message_content,
             'reason'         : reason,
             'risk_score'     : risk_score,
@@ -253,18 +261,19 @@ def report_user(reported_by, reported_user,
 
 def ban_user(user_id, ban_type, reason,
              device_id=None, banned_by='admin',
-             expires_at=None):
-    """Bans a user."""
+             expires_at=None, source_report_id=None):
+    """Bans a user. Optionally links to the report that caused it."""
     try:
         add_document('banned_users', {
-            'user_id'   : user_id,
-            'device_id' : device_id,
-            'ban_type'  : ban_type,
-            'reason'    : reason,
-            'banned_by' : banned_by,
-            'banned_at' : datetime.now().isoformat(),
-            'expires_at': expires_at,
-            'is_active' : True
+            'user_id'          : user_id,
+            'device_id'        : device_id,
+            'ban_type'         : ban_type,
+            'reason'           : reason,
+            'banned_by'        : banned_by,
+            'banned_at'        : datetime.now().isoformat(),
+            'expires_at'       : expires_at,
+            'is_active'        : True,
+            'source_report_id' : source_report_id
         })
         increment_field('system_stats', 'main', 'total_banned', 1)
     except Exception as e:
