@@ -8,14 +8,14 @@ import json
 import os
 import sys
 
-# ─────────────────────────────────────────
-# CONFIGURATION
-# Change SERVER_IP to your computer's IPv4
-# ─────────────────────────────────────────
-
-SERVER_IP   = "127.0.0.1"   # Change to your IPv4 e.g. "192.168.1.5"
+SERVER_IP   = "127.0.0.1"
 SERVER_PORT = "5000"
-BASE_URL    = f"http://{SERVER_IP}:{SERVER_PORT}"
+BASE_URL = "https://geniustalk-backend.onrender.com"
+
+# Allow passing Render URL as argument
+if len(sys.argv) > 1:
+    BASE_URL = sys.argv[1].rstrip('/')
+    print(f"Using server: {BASE_URL}")
 
 
 # ─────────────────────────────────────────

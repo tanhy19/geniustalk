@@ -213,7 +213,51 @@ def query_collection(collection, filters=None, order_by=None, limit=50):
         print(f"query_collection error: {e}")
         return []
 
+def get_collection(self, collection):
+    """Get all documents from a Firestore collection."""
+    try:
+        url = f"{self.base_url}/{collection}"
+        response = requests.get(url, headers=self._headers())
+        if response.status_code != 200:
+            return []
+        data = response.json()
+        docs = data.get("documents", [])
+        result = []
+        for doc in docs:
+            fields = doc.get("fields", {})
+            parsed = self._parse_fields(fields)
+            parsed["id"] = doc.get("name", "").split("/")[-1]
+            result.append(parsed)
+        return result
+    except Exception as e:
+        print(f"get_collection error: {e}")
+        return []
 
+def update_document(self, collection, doc_id, fields):
+    """Update specific fields in a Firestore document."""
+    try:
+        url = f"{self.base_url}/{collection}/{doc_id}"
+        field_paths = "&".join(
+            [f"updateMask.fieldPaths={k}" for k in fields.keys()]
+        )
+        full_url = f"{url}?{field_paths}"
+        wrapped = {"fields": {k: self._wrap_value(v) for k, v in fields.items()}}
+        response = requests.patch(full_url, headers=self._headers(), json=wrapped)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"update_document error: {e}")
+        return False
+
+def delete_document(self, collection, doc_id):
+    """Delete a document from Firestore."""
+    try:
+        url = f"{self.base_url}/{collection}/{doc_id}"
+        response = requests.delete(url, headers=self._headers())
+        return response.status_code == 200
+    except Exception as e:
+        print(f"delete_document error: {e}")
+        return False
+    
 def increment_field(collection, doc_id, field, amount=1):
     """
     Increments a numeric field using Firestore transforms.
