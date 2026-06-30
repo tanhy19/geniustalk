@@ -600,6 +600,30 @@ def get_pending_reports(limit=50):
         return {'reported_messages': [], 'reported_users': []}
 
 
+# ─────────────────────────────────────────
+# USER LOOKUP (for displaying real names)
+# ─────────────────────────────────────────
+
+def get_user_display_name(user_id):
+    """
+    Looks up a user's display name from the 'users' collection.
+    Falls back to the raw user_id if not found.
+    """
+    try:
+        if not user_id or user_id == 'unknown':
+            return user_id or 'unknown'
+        user_doc = get_document('users', user_id)
+        if user_doc:
+            return (user_doc.get('display_name') or
+                    user_doc.get('name') or
+                    user_doc.get('username') or
+                    user_id)
+        return user_id
+    except Exception as e:
+        print(f"get_user_display_name error: {e}")
+        return user_id
+
+
 def get_banned_users(limit=50):
     """Returns all active banned users."""
     try:

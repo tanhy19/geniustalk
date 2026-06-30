@@ -30,6 +30,7 @@ from utils.db_logger      import (
     get_banned_users,
     get_qr_scan_history,
     get_user_trust_score,
+    get_user_display_name,
     create_security_alert,
     get_active_alerts,
     deactivate_alert,
@@ -473,7 +474,10 @@ def admin_stats():
 
 @app.route('/admin/banned', methods=['GET'])
 def get_banned_list():
-    return make_response(True, get_banned_users())
+    banned = get_banned_users()
+    for b in banned:
+        b['display_name'] = get_user_display_name(b.get('user_id', ''))
+    return make_response(True, banned)
 
 
 @app.route('/admin/reports', methods=['GET'])
