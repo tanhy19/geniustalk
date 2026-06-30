@@ -250,3 +250,17 @@ class FirebaseConfig:
         except Exception as e:
             print(f"increment_field error: {e}")
             return False
+        
+# ─────────────────────────────────────────
+# BACKWARDS COMPATIBILITY ALIASES
+# ─────────────────────────────────────────
+# This ensures files like db_logger.py can still import functions directly
+
+add_document     = FirebaseConfig.add_document
+set_document     = FirebaseConfig.set_document
+get_document     = FirebaseConfig.get_document
+update_document  = FirebaseConfig.update_document
+query_collection = FirebaseConfig.query_collection
+get_collection   = FirebaseConfig.get_collection
+delete_document  = FirebaseConfig.delete_document
+increment_field  = FirebaseConfig.increment_field
