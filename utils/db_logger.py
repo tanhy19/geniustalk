@@ -276,11 +276,13 @@ def ban_user(user_id, ban_type, reason,
             'source_report_id' : source_report_id
         })
         increment_field('system_stats', 'main', 'total_banned', 1)
+        log_admin_action('ban_user', banned_by, target=user_id,
+                          details=f"{ban_type} ban — {reason}")
     except Exception as e:
         print(f"ban_user error: {e}")
 
 
-def unban_user(user_id):
+def unban_user(user_id, unbanned_by='admin'):
     """Removes active ban for a user."""
     try:
         docs = query_collection(
@@ -293,6 +295,7 @@ def unban_user(user_id):
         for doc in docs:
             update_document('banned_users', doc['id'],
                           {'is_active': False})
+        log_admin_action('unban_user', unbanned_by, target=user_id)
     except Exception as e:
         print(f"unban_user error: {e}")
 
@@ -409,6 +412,7 @@ def create_security_alert(title, message, severity='medium',
             'created_at': datetime.now().isoformat(),
             'expires_at': expires_at
         })
+        log_admin_action('create_alert', created_by, target=title)
     except Exception as e:
         print(f"create_security_alert error: {e}")
 
@@ -449,6 +453,7 @@ def create_phishing_drill(title, drill_message,
             'pass_count'   : 0,
             'fail_count'   : 0
         })
+        log_admin_action('create_drill', created_by, target=title)
     except Exception as e:
         print(f"create_phishing_drill error: {e}")
 
@@ -485,6 +490,7 @@ def add_safety_tip(category, title, content, created_by='admin'):
             'is_active' : True,
             'created_at': datetime.now().isoformat()
         })
+        log_admin_action('create_tip', created_by, target=title)
     except Exception as e:
         print(f"add_safety_tip error: {e}")
 
@@ -649,3 +655,81 @@ def get_qr_scan_history(limit=50):
     except Exception as e:
         print(f"get_qr_scan_history error: {e}")
         return []
+
+
+# ─────────────────────────────────────────
+# ADMIN ACTIVITY LOG (separate from user scans)
+# ─────────────────────────────────────────
+
+def log_admin_action(action_type, performed_by, target=None, details=None):
+    """
+    Logs an admin action for the Activity Monitoring screen.
+    action_type examples: 'ban_user', 'unban_user', 'create_alert',
+    'create_drill', 'create_tip', 'review_message_report',
+    'review_user_report', 'update_alert', 'delete_alert'
+    """
+    try:
+        add_document('admin_actions', {
+            'action_type' : action_type,
+            'performed_by': performed_by,
+            'target'      : target or '',
+            'details'     : details or '',
+            'timestamp'   : datetime.now().isoformat()
+        })
+    except Exception as e:
+        print(f"log_admin_action error: {e}")
+
+
+def get_admin_actions(limit=100):
+    """Returns admin activity log, most recent first."""
+    try:
+        return query_collection(
+            'admin_actions',
+            order_by='timestamp',
+            limit=limit
+        )
+    except Exception as e:
+        print(f"get_admin_actions error: {e}")
+        return []
+
+
+# ─────────────────────────────────────────
+# REPORT REVIEW ACTIONS
+# ─────────────────────────────────────────
+
+def review_message_report(report_id, decision, reviewed_by='admin'):
+    """
+    Admin marks a reported message as 'confirmed_scam' or 'not_scam'.
+    Does NOT ban anyone — pure content moderation.
+    """
+    try:
+        update_document('reported_messages', report_id, {
+            'status'     : decision,  # 'confirmed_scam' or 'not_scam'
+            'reviewed_by': reviewed_by,
+            'reviewed_at': datetime.now().isoformat()
+        })
+        log_admin_action(
+            'review_message_report', reviewed_by,
+            target=report_id, details=f"Marked as {decision}"
+        )
+    except Exception as e:
+        print(f"review_message_report error: {e}")
+
+
+def review_user_report(report_id, decision, reviewed_by='admin'):
+    """
+    Admin marks a reported user report as 'dismissed' or 'actioned'.
+    The actual ban is a separate call to ban_user().
+    """
+    try:
+        update_document('reported_users', report_id, {
+            'status'     : decision,  # 'dismissed' or 'actioned'
+            'reviewed_by': reviewed_by,
+            'reviewed_at': datetime.now().isoformat()
+        })
+        log_admin_action(
+            'review_user_report', reviewed_by,
+            target=report_id, details=f"Marked as {decision}"
+        )
+    except Exception as e:
+        print(f"review_user_report error: {e}")

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ── Your modules ──
+
 from utils.file_inspector import inspect_file
 from utils.text_analyzer  import analyze_text, analyze_image_text
 from utils.translator     import prepare_text_for_scanning
@@ -40,7 +40,11 @@ from utils.db_logger      import (
     add_safety_tip,
     get_safety_tips,
     submit_user_feedback,
-    get_user_feedback
+    get_user_feedback,
+    get_admin_actions,
+    review_message_report,
+    review_user_report,
+    get_user_display_name 
 )
 
 # ── YY's modules ──
@@ -407,7 +411,7 @@ def unban_user_endpoint():
     data = request.get_json()
     if not data or "user_id" not in data:
         return make_response(False, error="Missing user_id", status_code=400)
-    unban_user(data["user_id"])
+    unban_user(data["user_id"], unbanned_by=data.get("unbanned_by", "admin"))
     return make_response(True, {"message": "User unbanned successfully"})
 
 
@@ -426,26 +430,15 @@ def check_ban_endpoint(user_id):
 
 @app.route('/admin/flagged', methods=['GET'])
 def admin_flagged():
-    """Returns all HIGH risk flagged items with text content."""
+    """Returns flagged content with message text for admin review."""
     items = get_all_flagged()
-    # Normalize field names so Flutter always finds 'text'
-    normalized = []
-    for item in (items or []):
-        normalized.append({
-            "text"       : item.get("text") or item.get("content") or item.get("message_content") or item.get("input_text") or "",
-            "risk_score" : item.get("risk_score", 0),
-            "risk_label" : item.get("risk_label", ""),
-            "is_scam"    : item.get("is_scam", False),
-            "source"     : item.get("source", ""),
-            "timestamp"  : item.get("timestamp") or item.get("created_at") or "",
-            "id"         : item.get("id", ""),
-        })
-    return make_response(True, normalized)
+    return make_response(True, items)
 
 
 @app.route('/admin/history', methods=['GET'])
 def admin_history():
-    return make_response(True, get_scan_history())
+    """Returns admin activity log (bans, alerts, reviews) — NOT user messages."""
+    return make_response(True, get_admin_actions())
 
 
 @app.route('/admin/stats', methods=['GET'])
@@ -483,6 +476,32 @@ def get_banned_list():
 @app.route('/admin/reports', methods=['GET'])
 def get_reports():
     return make_response(True, get_pending_reports())
+
+
+@app.route('/admin/report/message/review', methods=['POST'])
+def review_message_report_endpoint():
+    """Admin marks a reported message as scam or not scam. No ban."""
+    data = request.get_json()
+    if not data or "report_id" not in data or "decision" not in data:
+        return make_response(False, error="Missing report_id or decision", status_code=400)
+    decision = data["decision"]
+    if decision not in ['confirmed_scam', 'not_scam']:
+        return make_response(False, error="decision must be 'confirmed_scam' or 'not_scam'", status_code=400)
+    review_message_report(data["report_id"], decision, data.get("reviewed_by", "admin"))
+    return make_response(True, {"message": f"Message marked as {decision}"})
+
+
+@app.route('/admin/report/user/review', methods=['POST'])
+def review_user_report_endpoint():
+    """Admin marks a reported user report as dismissed or actioned."""
+    data = request.get_json()
+    if not data or "report_id" not in data or "decision" not in data:
+        return make_response(False, error="Missing report_id or decision", status_code=400)
+    decision = data["decision"]
+    if decision not in ['dismissed', 'actioned']:
+        return make_response(False, error="decision must be 'dismissed' or 'actioned'", status_code=400)
+    review_user_report(data["report_id"], decision, data.get("reviewed_by", "admin"))
+    return make_response(True, {"message": f"User report marked as {decision}"})
 
 
 @app.route('/admin/qr-history', methods=['GET'])
@@ -574,11 +593,12 @@ def update_alert_endpoint(alert_id):
     if "message"  in data: fields["message"]  = data["message"]
     if "body"     in data: fields["message"]  = data["body"]
     if "severity" in data: fields["severity"] = data["severity"]
-    if "active"   in data: fields["active"]   = data["active"]
+    if "active"   in data: fields["is_active"] = data["active"]
+    if "is_active" in data: fields["is_active"] = data["is_active"]
     if not fields:
         return make_response(False, error="No fields to update", status_code=400)
     try:
-        ok = firebase.update_document("alerts", alert_id, fields)
+        ok = firebase.update_document("security_alerts", alert_id, fields)
         if ok:
             return make_response(True, {"updated": alert_id})
         return make_response(False, error="Update failed")
@@ -590,7 +610,7 @@ def update_alert_endpoint(alert_id):
 def delete_alert_endpoint(alert_id):
     """Admin deletes an alert."""
     try:
-        ok = firebase.delete_document("alerts", alert_id)
+        ok = firebase.delete_document("security_alerts", alert_id)
         if ok:
             return make_response(True, {"deleted": alert_id})
         return make_response(False, error="Delete failed")
@@ -697,7 +717,8 @@ def update_tip_endpoint(tip_id):
     if "content"  in data: fields["content"] = data["content"]
     if "body"     in data: fields["content"] = data["body"]
     if "category" in data: fields["category"] = data["category"]
-    if "active"   in data: fields["active"]  = data["active"]
+    if "active"   in data: fields["is_active"] = data["active"]
+    if "is_active" in data: fields["is_active"] = data["is_active"]
     if not fields:
         return make_response(False, error="No fields to update", status_code=400)
     try:
