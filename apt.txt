@@ -1,0 +1,3 @@
+tesseract-ocr
+libzbar0
+libmagic1

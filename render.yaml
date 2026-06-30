@@ -2,7 +2,7 @@ services:
   - type: web
     name: geniustalk-backend
     runtime: python
-    buildCommand: "apt-get install -y tesseract-ocr libzbar0 libmagic1 && pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app --timeout 120 --workers 1"
     envVars:
       - key: PYTHON_VERSION
