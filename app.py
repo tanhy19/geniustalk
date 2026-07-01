@@ -782,6 +782,50 @@ def get_feedback():
     return make_response(True, normalized)
 
 
+@app.route('/awareness/feedback/reply', methods=['POST'])
+def reply_to_feedback():
+    """Admin replies to a user feedback submission."""
+    data = request.get_json()
+    if not data or 'feedback_id' not in data or 'reply' not in data:
+        return make_response(False, error="Missing feedback_id or reply", status_code=400)
+    try:
+        ok = firebase.update_document('user_feedback', data['feedback_id'], {
+            'admin_reply': data['reply'],
+            'replied_by': data.get('replied_by', 'admin'),
+            'replied_at': datetime.now(timezone.utc).isoformat(),
+            'status': 'replied'
+        })
+        if ok:
+            return make_response(True, {"message": "Reply sent"})
+        return make_response(False, error="Update failed")
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
+
+
+@app.route('/awareness/feedback/user/<user_id>', methods=['GET'])
+def get_user_feedback_by_id(user_id):
+    """Returns feedback submitted by a specific user (for their profile view)."""
+    from utils.firebase_config import query_collection
+    try:
+        items = query_collection(
+            'user_feedback',
+            filters=[('user_id', 'EQUAL', user_id)],
+            order_by='submitted_at'
+        ) or []
+        normalized = [{
+            'id': item.get('id', ''),
+            'feedback': item.get('message') or item.get('feedback') or '',
+            'rating': item.get('rating', 0),
+            'status': item.get('status', 'unread'),
+            'admin_reply': item.get('admin_reply', ''),
+            'replied_at': item.get('replied_at', ''),
+            'submitted_at': item.get('submitted_at', ''),
+        } for item in items]
+        return make_response(True, normalized)
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
+
+
 # ─────────────────────────────────────────
 # BLOCK USER (Firestore-based, no Flask state needed for block itself,
 # but we log the action for admin visibility)
@@ -884,6 +928,8 @@ if __name__ == "__main__":
     print("   DEL  /awareness/tip/<id>")
     print("   POST /awareness/feedback")
     print("   GET  /awareness/feedback/all")
+    print("   POST /awareness/feedback/reply")
+    print("   GET  /awareness/feedback/user/<user_id>")
     print("=" * 55)
     print(" USER:")
     print("   POST /user/block")
