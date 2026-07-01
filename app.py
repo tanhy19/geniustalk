@@ -783,6 +783,54 @@ def get_feedback():
 
 
 # ─────────────────────────────────────────
+# BLOCK USER (Firestore-based, no Flask state needed for block itself,
+# but we log the action for admin visibility)
+# ─────────────────────────────────────────
+
+@app.route('/user/block', methods=['POST'])
+def block_user_endpoint():
+    """Logs a block action — actual block enforcement happens in Flutter/Firestore."""
+    data = request.get_json()
+    if not data or "blocker_id" not in data or "blocked_id" not in data:
+        return make_response(False, error="Missing blocker_id or blocked_id", status_code=400)
+    from utils.db_logger import log_admin_action
+    log_admin_action(
+        'user_blocked',
+        data["blocker_id"],
+        target=data["blocked_id"],
+        details="User blocked another user"
+    )
+    return make_response(True, {"message": "Block logged"})
+
+
+# ─────────────────────────────────────────
+# MY REPORTS (user's own report history)
+# ─────────────────────────────────────────
+
+@app.route('/user/my-reports/<user_id>', methods=['GET'])
+def get_my_reports_endpoint(user_id):
+    """Returns reports filed BY this user (both message and user reports)."""
+    from utils.firebase_config import query_collection
+    try:
+        message_reports = query_collection(
+            'reported_messages',
+            filters=[('reported_by', 'EQUAL', user_id)],
+            order_by='reported_at'
+        )
+        user_reports = query_collection(
+            'reported_users',
+            filters=[('reported_by', 'EQUAL', user_id)],
+            order_by='reported_at'
+        )
+        return make_response(True, {
+            'message_reports': message_reports,
+            'user_reports': user_reports
+        })
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
+
+
+# ─────────────────────────────────────────
 # RUN SERVER
 # ─────────────────────────────────────────
 
@@ -836,4 +884,9 @@ if __name__ == "__main__":
     print("   DEL  /awareness/tip/<id>")
     print("   POST /awareness/feedback")
     print("   GET  /awareness/feedback/all")
+    print("=" * 55)
+    print(" USER:")
+    print("   POST /user/block")
+    print("   GET  /user/my-reports/<user_id>")
+    print("=" * 55)
     app.run(debug=True, host='0.0.0.0', port=5000)
