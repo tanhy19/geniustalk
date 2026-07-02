@@ -212,26 +212,24 @@ def log_qr_scan(qr_result):
 # COMMUNITY DEFENSE
 # ─────────────────────────────────────────
 
-def report_message(reported_by, message_content,
-                   reason, message_sender=None, risk_score=0,
+def report_message(reported_by, message_content, reason,
+                   message_sender=None, risk_score=0,
                    media_url=None, media_type=None, file_name=None):
     try:
-        doc = {
+        add_document('reported_messages', {
             'reported_by'    : reported_by,
             'message_sender' : message_sender or 'unknown',
             'message_content': message_content,
             'reason'         : reason,
             'risk_score'     : risk_score,
+            'media_url'      : media_url or '',
+            'media_type'     : media_type or 'text',
+            'file_name'      : file_name or '',
             'status'         : 'pending',
             'reviewed_by'    : None,
             'reported_at'    : datetime.now().isoformat(),
-            'reviewed_at'    : None,
-        }
-        if media_url:  doc['media_url']  = media_url
-        if media_type: doc['media_type'] = media_type
-        if file_name:  doc['file_name']  = file_name
-
-        add_document('reported_messages', doc)
+            'reviewed_at'    : None
+        })
         increment_field('system_stats', 'main', 'total_reported', 1)
     except Exception as e:
         print(f"report_message error: {e}")
