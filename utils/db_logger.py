@@ -213,14 +213,10 @@ def log_qr_scan(qr_result):
 # ─────────────────────────────────────────
 
 def report_message(reported_by, message_content,
-                   reason, message_sender=None, risk_score=0):
-    """
-    Logs a reported message.
-    message_sender = the user who SENT the suspicious message (the one who may get banned).
-    reported_by    = the user who FILED the report.
-    """
+                   reason, message_sender=None, risk_score=0,
+                   media_url=None, media_type=None, file_name=None):
     try:
-        add_document('reported_messages', {
+        doc = {
             'reported_by'    : reported_by,
             'message_sender' : message_sender or 'unknown',
             'message_content': message_content,
@@ -229,8 +225,13 @@ def report_message(reported_by, message_content,
             'status'         : 'pending',
             'reviewed_by'    : None,
             'reported_at'    : datetime.now().isoformat(),
-            'reviewed_at'    : None
-        })
+            'reviewed_at'    : None,
+        }
+        if media_url:  doc['media_url']  = media_url
+        if media_type: doc['media_type'] = media_type
+        if file_name:  doc['file_name']  = file_name
+
+        add_document('reported_messages', doc)
         increment_field('system_stats', 'main', 'total_reported', 1)
     except Exception as e:
         print(f"report_message error: {e}")

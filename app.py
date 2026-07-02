@@ -364,7 +364,10 @@ def report_message_endpoint():
         message_content = data.get("message_content", ""),
         reason          = data.get("reason", ""),
         message_sender  = data.get("reported_user") or data.get("message_sender"),
-        risk_score      = data.get("risk_score", 0)
+        risk_score      = data.get("risk_score", 0),
+        media_url       = data.get("media_url"),
+        media_type      = data.get("media_type"),
+        file_name       = data.get("file_name"),
     )
     return make_response(True, {"message": "Report submitted successfully"})
 
