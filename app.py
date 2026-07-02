@@ -47,7 +47,6 @@ from utils.db_logger      import (
     get_user_display_name 
 )
 
-# ── YY's modules ──
 from utils.keyword_engine import keyword_scan
 from utils.qr_scanner     import scan_qr, analyze_qr_content
 from utils.link_verifier  import verify_links
@@ -467,11 +466,8 @@ def admin_stats():
 
 @app.route('/admin/banned', methods=['GET'])
 def get_banned_list():
-    banned = get_banned_users()
-    for b in banned:
-        b['display_name'] = get_user_display_name(b.get('user_id', ''))
-    return make_response(True, banned)
-
+    from utils.db_logger import get_banned_users_with_names
+    return make_response(True, get_banned_users_with_names())
 
 @app.route('/admin/reports', methods=['GET'])
 def get_reports():
@@ -508,6 +504,68 @@ def review_user_report_endpoint():
 def get_qr_history():
     return make_response(True, get_qr_scan_history())
 
+# ── Confirmed scams collection ────────────────────────────────
+@app.route('/admin/confirm-scam', methods=['POST'])
+def confirm_scam_endpoint():
+    """Admin confirms a reported message as scam and categorises it."""
+    data = request.get_json()
+    if not data:
+        return make_response(False, error="Missing data", status_code=400)
+
+    report_id    = data.get('report_id', '')
+    message_text = data.get('message_text', '')
+    category     = data.get('category', 'Other')
+    risk_level   = data.get('risk_level', 'medium')
+    notes        = data.get('notes', '')
+    confirmed_by = data.get('confirmed_by', 'admin')
+
+    if not message_text:
+        return make_response(False, error="message_text required", status_code=400)
+
+    from utils.db_logger import log_admin_action
+    try:
+        # Write to confirmed_scams collection
+        doc_id = firebase.add_document('confirmed_scams', {
+            'message_text'  : message_text,
+            'category'      : category,
+            'risk_level'    : risk_level,
+            'notes'         : notes,
+            'confirmed_by'  : confirmed_by,
+            'source_report_id': report_id,
+            'confirmed_at'  : datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Update the original report status to confirmed_scam
+        if report_id:
+            firebase.update_document('reported_messages', report_id, {
+                'status'     : 'confirmed_scam',
+                'reviewed_by': confirmed_by,
+                'reviewed_at': datetime.now(timezone.utc).isoformat(),
+            })
+
+        log_admin_action(
+            'confirm_scam', confirmed_by,
+            target=category,
+            details=f"Risk: {risk_level} — {message_text[:80]}"
+        )
+
+        return make_response(True, {'doc_id': doc_id, 'message': 'Scam confirmed and catalogued'})
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
+
+
+@app.route('/admin/confirmed-scams', methods=['GET'])
+def get_confirmed_scams():
+    """Returns the confirmed scams database."""
+    try:
+        items = firebase.query_collection(
+            'confirmed_scams',
+            order_by='confirmed_at',
+            limit=100
+        )
+        return make_response(True, items)
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
 
 @app.route('/user/trust/<user_id>', methods=['GET'])
 def get_trust_score(user_id):

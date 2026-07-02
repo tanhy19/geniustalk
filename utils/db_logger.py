@@ -643,6 +643,33 @@ def get_banned_users(limit=50):
         print(f"get_banned_users error: {e}")
         return []
 
+def get_banned_users_with_names(limit=50):
+    """Returns active banned users with display names looked up from users collection."""
+    try:
+        bans = query_collection(
+            'banned_users',
+            filters=[('is_active', 'EQUAL', True)],
+            order_by='banned_at',
+            limit=limit
+        )
+        for ban in bans:
+            uid = ban.get('user_id', '')
+            if uid:
+                user_doc = get_document('users', uid)
+                if user_doc:
+                    ban['display_name'] = (
+                        user_doc.get('fullName') or
+                        user_doc.get('full_name') or
+                        user_doc.get('name') or
+                        uid
+                    )
+                    ban['email'] = user_doc.get('email', '')
+                else:
+                    ban['display_name'] = uid
+        return bans
+    except Exception as e:
+        print(f"get_banned_users_with_names error: {e}")
+        return []
 
 def get_qr_scan_history(limit=50):
     """Returns QR scan history."""
