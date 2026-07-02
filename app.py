@@ -366,6 +366,7 @@ def report_message_endpoint():
         message_sender  = data.get("message_sender"),
         message_content = data.get("message_content", ""),
         reason          = data.get("reason", ""),
+        message_sender  = data.get("reported_user", None),
         risk_score      = data.get("risk_score", 0)
     )
     return make_response(True, {"message": "Report submitted successfully"})
