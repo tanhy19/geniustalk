@@ -59,7 +59,7 @@ firebase = FirebaseConfig()
 # CONFIGURATION
 # ─────────────────────────────────────────
 
-MAX_FILE_SIZE_MB    = 10
+MAX_FILE_SIZE_MB    = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 TEMP_FOLDER         = "temp_uploads"
 
