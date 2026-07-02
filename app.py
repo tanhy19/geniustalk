@@ -54,6 +54,7 @@ from utils.firebase_config import FirebaseConfig
 
 app = Flask(__name__)
 firebase = FirebaseConfig()
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  
 
 # ─────────────────────────────────────────
 # CONFIGURATION
