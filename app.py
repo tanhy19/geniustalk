@@ -359,14 +359,11 @@ def report_message_endpoint():
     data = request.get_json()
     if not data:
         return make_response(False, error="Missing data", status_code=400)
-    if not data.get("message_sender"):
-        return make_response(False, error="message_sender is required", status_code=400)
     report_message(
         reported_by     = data.get("reported_by", "anonymous"),
-        message_sender  = data.get("message_sender"),
         message_content = data.get("message_content", ""),
         reason          = data.get("reason", ""),
-        message_sender  = data.get("reported_user", None),
+        message_sender  = data.get("reported_user") or data.get("message_sender"),
         risk_score      = data.get("risk_score", 0)
     )
     return make_response(True, {"message": "Report submitted successfully"})
