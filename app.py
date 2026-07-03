@@ -25,7 +25,9 @@ from utils.db_logger      import (
     report_user,
     ban_user,
     unban_user,
+    unban_device,
     is_user_banned,
+    is_device_banned,
     get_all_flagged,
     get_scan_history,
     get_system_stats,
@@ -432,6 +434,62 @@ def check_ban_endpoint(user_id):
     return make_response(True, {
         "is_banned"  : result is not None,
         "ban_details": result
+    })
+
+
+@app.route('/admin/check-device-ban/<device_id>', methods=['GET'])
+def check_device_ban_endpoint(device_id):
+    result = is_device_banned(device_id)
+    return make_response(True, {
+        "is_banned"  : result is not None,
+        "ban_details": result
+    })
+
+
+@app.route('/admin/ban-device', methods=['POST'])
+def ban_device_endpoint():
+    data = request.get_json()
+    if not data or "device_id" not in data:
+        return make_response(False, error="Missing device_id", status_code=400)
+    ban_user(
+        user_id           = data.get("user_id", ""),
+        ban_type          = data.get("ban_type", "temporary"),
+        reason            = data.get("reason", ""),
+        device_id         = data.get("device_id"),
+        banned_by         = data.get("banned_by", "admin"),
+        expires_at        = data.get("expires_at", None),
+        source_report_id  = data.get("source_report_id", None)
+    )
+    return make_response(True, {"message": "Device banned successfully"})
+
+
+@app.route('/admin/unban-device', methods=['POST'])
+def unban_device_endpoint():
+    data = request.get_json()
+    if not data or "device_id" not in data:
+        return make_response(False, error="Missing device_id", status_code=400)
+    unban_device(data["device_id"], unbanned_by=data.get("unbanned_by", "admin"))
+    return make_response(True, {"message": "Device unbanned successfully"})
+
+
+@app.route('/auth/access-check', methods=['POST'])
+def auth_access_check_endpoint():
+    data = request.get_json() or {}
+    user_id = (data.get("user_id") or "").strip()
+    device_id = (data.get("device_id") or "").strip()
+    if not user_id and not device_id:
+        return make_response(False, error="Missing user_id or device_id", status_code=400)
+
+    user_ban = is_user_banned(user_id) if user_id else None
+    device_ban = is_device_banned(device_id) if device_id else None
+    is_blocked = user_ban is not None or device_ban is not None
+
+    return make_response(True, {
+        "is_blocked"      : is_blocked,
+        "is_user_banned"  : user_ban is not None,
+        "is_device_banned": device_ban is not None,
+        "user_ban_details": user_ban,
+        "device_ban_details": device_ban
     })
 
 

@@ -326,6 +326,43 @@ def is_user_banned(user_id):
         return None
 
 
+def is_device_banned(device_id):
+    """Checks if a device is currently banned."""
+    if not device_id:
+        return None
+    try:
+        docs = query_collection(
+            'banned_users',
+            filters=[
+                ('device_id', 'EQUAL', device_id),
+                ('is_active', 'EQUAL', True)
+            ],
+            limit=1
+        )
+        return docs[0] if docs else None
+    except Exception as e:
+        print(f"is_device_banned error: {e}")
+        return None
+
+
+def unban_device(device_id, unbanned_by='admin'):
+    """Removes active device bans."""
+    try:
+        docs = query_collection(
+            'banned_users',
+            filters=[
+                ('device_id', 'EQUAL', device_id),
+                ('is_active', 'EQUAL', True)
+            ]
+        )
+        for doc in docs:
+            update_document('banned_users', doc['id'], {'is_active': False})
+        log_admin_action('unban_device', unbanned_by, target=device_id)
+    except Exception as e:
+        print(f"unban_device error: {e}")
+        return None
+
+
 # ─────────────────────────────────────────
 # TRUST SCORE
 # ─────────────────────────────────────────
