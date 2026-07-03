@@ -5,7 +5,7 @@
 
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.firebase_config import (
     add_document,
     set_document,
@@ -14,7 +14,6 @@ from utils.firebase_config import (
     query_collection,
     increment_field
 )
-
 
 # ─────────────────────────────────────────
 # INITIALIZE
@@ -147,67 +146,78 @@ def log_file_scan(filename, inspection_result):
         print(f"log_file_scan error: {e}")
 
 
-def log_image_scan(filename, ocr_result):
-    """Logs an image OCR scan result to Firestore."""
+def log_image_scan(filename, result):
+    """
+    Logs an image scan transaction cleanly based on the new ocr_engine schema.
+    """
     try:
-        analysis   = ocr_result.get('analysis', {})
-        is_flagged = 1 if analysis.get('risk_label') == 'HIGH' else 0
-        is_blocked = 1 if analysis.get('is_scam') else 0
-
-        add_document('scan_logs', {
-            'scan_type'    : 'image',
-            'source'       : 'upload',
-            'input_summary': filename,
-            'risk_score'   : analysis.get('risk_score', 0),
-            'risk_label'   : analysis.get('risk_label', 'LOW'),
-            'is_flagged'   : is_flagged,
-            'is_blocked'   : is_blocked,
-            'scanned_at'   : datetime.now().isoformat()
-        })
-
-        if is_flagged:
-            keywords     = analysis.get('matched_keywords', {})
-            all_keywords = (
-                keywords.get('high', []) +
-                keywords.get('medium', [])
-            )
-            add_document('flagged_items', {
-                    'scan_type'       : 'image',
-                    'text'            : ocr_result.get('extracted_text', ''),
-                    'risk_score'      : analysis.get('risk_score', 0),
-                    'risk_label'      : analysis.get('risk_label', 'HIGH'),
-                    'summary'         : analysis.get('summary', ''),
-                    'matched_keywords' : json.dumps(all_keywords),
-                    'flagged_at'      : datetime.now().isoformat()
-                })
-
-        _update_stats(is_flagged, is_blocked)
-
+        # Extract data from the new structure safely using .get()
+        extracted_text = result.get("extracted_text", "")
+        text_length    = result.get("text_length", 0)
+        has_text       = result.get("has_text", False)
+        
+        # Pull metadata values from the inner image_properties dictionary
+        properties     = result.get("image_properties", {})
+        is_suspicious  = properties.get("is_suspicious", False)
+        reasons        = properties.get("suspicion_reason", [])
+        img_format     = properties.get("format", "unknown")
+        
+        scan_record = {
+            "filename"       : filename,
+            "timestamp"      : datetime.now(timezone.utc).isoformat(),
+            "extracted_text" : extracted_text,
+            "text_length"    : text_length,
+            "has_text"       : has_text,
+            "is_suspicious"  : is_suspicious,
+            "reasons"        : reasons,
+            "format"         : img_format,
+            "status"         : "success" if not result.get("error") else "failed",
+            "error_message"  : result.get("error")
+        }
+        
+        # ── FIXED: Call standalone add_document directly ──
+        return add_document("image_scans", scan_record)
     except Exception as e:
-        print(f"log_image_scan error: {e}")
+        print(f"[db_logger] log_image_scan error: {e}")
+        return None
 
 
-def log_qr_scan(qr_result):
-    """Logs a QR scan result to Firestore."""
+def log_qr_scan(result):
+    """
+    Logs a QR code transaction matching the nested qr_scanner schema.
+    """
     try:
-        analysis = qr_result.get('analysis', {})
-
-        add_document('qr_scan_logs', {
-            'image_name' : qr_result.get('image_name', 'unknown'),
-            'qr_content' : qr_result.get('qr_content', ''),
-            'content_type': (analysis.get('content_type', 'unknown')
-                            if analysis else 'unknown'),
-            'risk_score' : analysis.get('risk_score', 0) if analysis else 0,
-            'risk_label' : analysis.get('risk_label', 'LOW') if analysis else 'LOW',
-            'is_blocked' : analysis.get('is_blocked', False) if analysis else False,
-            'flags'      : analysis.get('flags', []) if analysis else [],
-            'scanned_at' : datetime.now().isoformat()
-        })
-
+        filename   = result.get("image_name", "unknown")
+        qr_found   = result.get("qr_found", False)
+        qr_content = result.get("qr_content", "")
+        
+        # Pull risk tags from the inner analysis dictionary
+        analysis   = result.get("analysis") or {}
+        risk_score = analysis.get("risk_score", 0)
+        risk_label = analysis.get("risk_label", "LOW")
+        is_blocked = analysis.get("is_blocked", False)
+        flags      = analysis.get("flags", [])
+        url_type   = analysis.get("content_type", "unknown")
+        
+        scan_record = {
+            "filename"     : filename,
+            "timestamp"    : datetime.now(timezone.utc).isoformat(), # ── FIXED: added timezone here too ──
+            "qr_found"     : qr_found,
+            "content"      : qr_content,
+            "content_type" : url_type,
+            "risk_score"   : risk_score,
+            "risk_label"   : risk_label,
+            "is_blocked"   : is_blocked,
+            "flags"        : flags,
+            "error_message": result.get("error")
+        }
+        
+        # ── FIXED: Call standalone add_document directly ──
+        return add_document("qr_scans", scan_record)
     except Exception as e:
-        print(f"log_qr_scan error: {e}")
-
-
+        print(f"[db_logger] log_qr_scan error: {e}")
+        return None
+    
 # ─────────────────────────────────────────
 # COMMUNITY DEFENSE
 # ─────────────────────────────────────────

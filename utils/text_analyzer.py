@@ -119,10 +119,10 @@ SUSPICIOUS_URL_PATTERNS = [
     r'tinyurl\.com\/\S+',
     r'shorturl\.at\/\S+',
     r'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}',  # IP address URLs
-    r'\b\w+\.(xyz|win|tk|ml|ga|cf|gq|top|club)\b',    # Suspicious TLDs
-    r'https?://\S+login\S+',                            # Fake login pages
-    r'https?://\S+verify\S+',                           # Fake verify pages
-    r'https?://\S+claim\S+',                            # Fake claim pages
+    r'\b\w+\.(?:xyz|win|tk|ml|ga|cf|gq|top|club)\b',  # Suspicious TLDs
+    r'https?://\S+login\S+',                          # Fake login pages
+    r'https?://\S+verify\S+',                         # Fake verify pages
+    r'https?://\S+claim\S+',                          # Fake claim pages
 ]
 
 # ─────────────────────────────────────────
