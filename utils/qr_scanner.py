@@ -3,7 +3,7 @@
 # Handles: QR decoding, content analysis, link verification
 
 import os
-from PIL import Image
+import cv2
 try:
     from utils.link_verifier import verify_links, analyze_url, expand_url
 except ImportError:
@@ -11,17 +11,17 @@ except ImportError:
 
 
 def decode_qr(image_path):
-    """Decodes QR code from image. Returns content string or None."""
+    """Decodes QR code from image using OpenCV. Returns content string or None."""
     try:
-        from pyzbar.pyzbar import decode
-        img              = Image.open(image_path)
-        decoded_objects  = decode(img)
-        if not decoded_objects:
+        img = cv2.imread(image_path)
+        if img is None:
             return None
-        return decoded_objects[0].data.decode("utf-8")
-    except Exception:
+        detector = cv2.QRCodeDetector()
+        data, points, _ = detector.detectAndDecode(img)
+        return data if data else None
+    except Exception as e:
+        print(f"[decode_qr] failed: {e}")
         return None
-
 
 def analyze_qr_content(qr_content):
     """

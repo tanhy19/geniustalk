@@ -4,16 +4,22 @@
 
 import os
 import json
+import platform
 import pytesseract
 from PIL import Image, ExifTags
 import re
 
 # ─────────────────────────────────────────
-# TESSERACT PATH (Windows)
+# TESSERACT PATH
 # ─────────────────────────────────────────
 
-# This tells Python where Tesseract is installed on Windows
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# On Windows (local dev), point at the installed binary if present.
+# On Linux (Docker/Render), tesseract is installed via apt-get in the
+# Dockerfile and is already on PATH, so tesseract_cmd stays unset there.
+if platform.system() == "Windows":
+    _default_windows_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    if os.path.exists(_default_windows_path):
+        pytesseract.pytesseract.tesseract_cmd = _default_windows_path
 
 
 # ─────────────────────────────────────────

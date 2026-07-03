@@ -5,6 +5,8 @@ from flask import Flask, request, jsonify
 import os
 import sys
 from datetime import datetime, timezone
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
