@@ -51,6 +51,7 @@ from utils.db_logger      import (
     review_user_report,
     get_user_display_name,
     confirm_user_report_scam,
+    enforce_trust_score_ban,
 )
 
 from utils.keyword_engine import keyword_scan
@@ -576,8 +577,26 @@ def review_user_report_endpoint():
     decision = data["decision"]
     if decision not in ['dismissed', 'actioned', 'confirmed_scam']:
         return make_response(False, error="decision must be 'dismissed', 'confirmed_scam' or 'actioned'", status_code=400)
-    review_user_report(data["report_id"], decision, data.get("reviewed_by", "admin"))
-    return make_response(True, {"message": f"User report marked as {decision}"})
+    report_id = data["report_id"]
+    reviewed_by = data.get("reviewed_by", "admin")
+    review_user_report(report_id, decision, reviewed_by)
+
+    # Auto permanent ban when trust score hits 0 after confirmed/actioned report.
+    auto = None
+    if decision in ['confirmed_scam', 'actioned']:
+        report = firebase.get_document('reported_users', report_id)
+        reported_user = (report or {}).get('reported_user', '')
+        if reported_user:
+            auto = enforce_trust_score_ban(
+                reported_user,
+                triggered_by=reviewed_by,
+                source_report_id=report_id,
+            )
+
+    return make_response(True, {
+        "message": f"User report marked as {decision}",
+        "auto_ban": auto,
+    })
 
 
 @app.route('/admin/report/user/confirm', methods=['POST'])
@@ -602,18 +621,15 @@ def confirm_user_report_endpoint():
 
     trust = get_user_trust_score(reported_user)
     trust_score = int(trust.get('trust_score', 100))
-    auto_banned = False
+    auto = enforce_trust_score_ban(
+        reported_user,
+        triggered_by=reviewed_by,
+        source_report_id=report_id,
+    )
+    auto_banned = auto.get('auto_banned') == True
 
-    if trust_score <= 0 and not is_user_banned(reported_user):
-        ban_user(
-            user_id=reported_user,
-            ban_type='permanent',
-            reason='Auto permanent ban: trust score reached 0 after confirmed user report',
-            banned_by=reviewed_by,
-            source_report_id=report_id
-        )
+    if auto_banned:
         review_user_report(report_id, 'actioned', reviewed_by)
-        auto_banned = True
 
     return make_response(True, {
         'message': 'Report confirmed as scam',
@@ -621,6 +637,7 @@ def confirm_user_report_endpoint():
         'reported_user': reported_user,
         'trust_score': trust_score,
         'auto_banned': auto_banned,
+        'auto_ban': auto,
     })
 
 
@@ -677,6 +694,8 @@ def get_confirmed_scams():
 @app.route('/user/trust/<user_id>', methods=['GET'])
 def get_trust_score(user_id):
     result = get_user_trust_score(user_id)
+    auto = enforce_trust_score_ban(user_id, triggered_by='system')
+    result['auto_ban'] = auto
     return make_response(True, result)
 
 

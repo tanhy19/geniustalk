@@ -854,3 +854,68 @@ def get_confirmed_user_report_count(user_id):
     except Exception as e:
         print(f"get_confirmed_user_report_count error: {e}")
         return 0
+
+
+def enforce_trust_score_ban(user_id, triggered_by='system', source_report_id=None):
+    """
+    Auto-enforce permanent ban when trust score reaches 0.
+    If an active temporary ban exists, it is upgraded to permanent.
+    """
+    try:
+        trust = get_user_trust_score(user_id)
+        trust_score = int(trust.get('trust_score', 100))
+        if trust_score > 0:
+            return {
+                'user_id': user_id,
+                'trust_score': trust_score,
+                'auto_banned': False,
+                'ban_type': None,
+            }
+
+        active_bans = query_collection(
+            'banned_users',
+            filters=[
+                ('user_id', 'EQUAL', user_id),
+                ('is_active', 'EQUAL', True),
+            ]
+        )
+
+        has_active_permanent = any(
+            (b.get('ban_type') or '').strip().lower() == 'permanent'
+            for b in active_bans
+        )
+        if has_active_permanent:
+            return {
+                'user_id': user_id,
+                'trust_score': trust_score,
+                'auto_banned': False,
+                'ban_type': 'permanent',
+            }
+
+        # Deactivate any active non-permanent bans before upgrading.
+        for ban in active_bans:
+            ban_id = ban.get('id')
+            if ban_id:
+                update_document('banned_users', ban_id, {'is_active': False})
+
+        ban_user(
+            user_id=user_id,
+            ban_type='permanent',
+            reason='Auto permanent ban: trust score reached 0',
+            banned_by=triggered_by,
+            source_report_id=source_report_id,
+        )
+        return {
+            'user_id': user_id,
+            'trust_score': trust_score,
+            'auto_banned': True,
+            'ban_type': 'permanent',
+        }
+    except Exception as e:
+        print(f"enforce_trust_score_ban error: {e}")
+        return {
+            'user_id': user_id,
+            'trust_score': 100,
+            'auto_banned': False,
+            'ban_type': None,
+        }
