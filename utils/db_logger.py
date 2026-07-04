@@ -370,11 +370,7 @@ def unban_device(device_id, unbanned_by='admin'):
 def get_user_trust_score(user_id):
     """Calculates trust score for a user."""
     try:
-        report_docs = query_collection(
-            'reported_users',
-            filters=[('reported_user', 'EQUAL', user_id)]
-        )
-        report_count = len(report_docs)
+        report_count = get_confirmed_user_report_count(user_id)
 
         temp_docs = query_collection(
             'banned_users',
@@ -806,3 +802,52 @@ def review_user_report(report_id, decision, reviewed_by='admin'):
         )
     except Exception as e:
         print(f"review_user_report error: {e}")
+
+
+def confirm_user_report_scam(report_id, reviewed_by='admin'):
+    """
+    Marks a pending reported-user item as confirmed scam.
+    Returns the updated report document on success.
+    """
+    try:
+        report = get_document('reported_users', report_id)
+        if not report:
+            return None
+        update_document('reported_users', report_id, {
+            'status'      : 'confirmed_scam',
+            'reviewed_by' : reviewed_by,
+            'reviewed_at' : datetime.now().isoformat(),
+            'confirmed_by': reviewed_by,
+            'confirmed_at': datetime.now().isoformat(),
+        })
+        report['status'] = 'confirmed_scam'
+        report['reviewed_by'] = reviewed_by
+        report['confirmed_by'] = reviewed_by
+        log_admin_action(
+            'confirm_user_report_scam', reviewed_by,
+            target=report_id, details='Marked as confirmed_scam'
+        )
+        return report
+    except Exception as e:
+        print(f"confirm_user_report_scam error: {e}")
+        return None
+
+
+def get_confirmed_user_report_count(user_id):
+    """
+    Counts only user reports that were confirmed/actioned by admin.
+    Pending/dismissed reports are excluded from trust deductions.
+    """
+    try:
+        report_docs = query_collection(
+            'reported_users',
+            filters=[('reported_user', 'EQUAL', user_id)]
+        )
+        confirmed_statuses = {'confirmed_scam', 'actioned'}
+        return len([
+            r for r in report_docs
+            if (r.get('status') or '').strip().lower() in confirmed_statuses
+        ])
+    except Exception as e:
+        print(f"get_confirmed_user_report_count error: {e}")
+        return 0

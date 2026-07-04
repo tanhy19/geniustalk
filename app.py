@@ -49,7 +49,8 @@ from utils.db_logger      import (
     get_admin_actions,
     review_message_report,
     review_user_report,
-    get_user_display_name 
+    get_user_display_name,
+    confirm_user_report_scam,
 )
 
 from utils.keyword_engine import keyword_scan
@@ -407,6 +408,20 @@ def ban_user_endpoint():
     data = request.get_json()
     if not data:
         return make_response(False, error="Missing data", status_code=400)
+
+    source_report_id = data.get("source_report_id", None)
+    if source_report_id:
+      report = firebase.get_document("reported_users", source_report_id)
+      if not report:
+          return make_response(False, error="source_report_id not found", status_code=404)
+      status = (report.get('status') or '').strip().lower()
+      if status != 'confirmed_scam':
+          return make_response(
+              False,
+              error="User report must be confirmed as scam before ban",
+              status_code=400
+          )
+
     ban_user(
         user_id           = data.get("user_id", ""),
         ban_type          = data.get("ban_type", "temporary"),
@@ -414,7 +429,7 @@ def ban_user_endpoint():
         device_id         = data.get("device_id", None),
         banned_by         = data.get("banned_by", "admin"),
         expires_at        = data.get("expires_at", None),
-        source_report_id  = data.get("source_report_id", None)
+        source_report_id  = source_report_id
     )
     return make_response(True, {"message": "User banned successfully"})
 
@@ -559,10 +574,54 @@ def review_user_report_endpoint():
     if not data or "report_id" not in data or "decision" not in data:
         return make_response(False, error="Missing report_id or decision", status_code=400)
     decision = data["decision"]
-    if decision not in ['dismissed', 'actioned']:
-        return make_response(False, error="decision must be 'dismissed' or 'actioned'", status_code=400)
+    if decision not in ['dismissed', 'actioned', 'confirmed_scam']:
+        return make_response(False, error="decision must be 'dismissed', 'confirmed_scam' or 'actioned'", status_code=400)
     review_user_report(data["report_id"], decision, data.get("reviewed_by", "admin"))
     return make_response(True, {"message": f"User report marked as {decision}"})
+
+
+@app.route('/admin/report/user/confirm', methods=['POST'])
+def confirm_user_report_endpoint():
+    data = request.get_json() or {}
+    report_id = (data.get('report_id') or '').strip()
+    reviewed_by = data.get('reviewed_by', 'admin')
+    if not report_id:
+        return make_response(False, error='Missing report_id', status_code=400)
+
+    report = confirm_user_report_scam(report_id, reviewed_by)
+    if not report:
+        return make_response(False, error='Report not found or update failed', status_code=404)
+
+    reported_user = (report.get('reported_user') or '').strip()
+    if not reported_user:
+        return make_response(True, {
+            'message': 'Report confirmed as scam',
+            'report_id': report_id,
+            'auto_banned': False,
+        })
+
+    trust = get_user_trust_score(reported_user)
+    trust_score = int(trust.get('trust_score', 100))
+    auto_banned = False
+
+    if trust_score <= 0 and not is_user_banned(reported_user):
+        ban_user(
+            user_id=reported_user,
+            ban_type='permanent',
+            reason='Auto permanent ban: trust score reached 0 after confirmed user report',
+            banned_by=reviewed_by,
+            source_report_id=report_id
+        )
+        review_user_report(report_id, 'actioned', reviewed_by)
+        auto_banned = True
+
+    return make_response(True, {
+        'message': 'Report confirmed as scam',
+        'report_id': report_id,
+        'reported_user': reported_user,
+        'trust_score': trust_score,
+        'auto_banned': auto_banned,
+    })
 
 
 @app.route('/admin/qr-history', methods=['GET'])
