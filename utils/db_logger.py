@@ -521,26 +521,29 @@ def get_all_drills():
         return []
 
 
-def add_safety_tip(category, title, content, created_by='admin'):
+def add_safety_tip(category, title, content, created_by='admin', is_active=True):
     """Adds a safety tip."""
     try:
-        add_document('safety_tips', {
+        return add_document('safety_tips', {
             'category'  : category,
             'title'     : title,
             'content'   : content,
             'created_by': created_by,
-            'is_active' : True,
+            'is_active' : bool(is_active),
             'created_at': datetime.now().isoformat()
         })
         log_admin_action('create_tip', created_by, target=title)
     except Exception as e:
         print(f"add_safety_tip error: {e}")
+        return None
 
 
-def get_safety_tips(category=None):
+def get_safety_tips(category=None, include_inactive=False):
     """Returns active safety tips."""
     try:
-        filters = [('is_active', 'EQUAL', True)]
+        filters = []
+        if not include_inactive:
+            filters.append(('is_active', 'EQUAL', True))
         if category:
             filters.append(('category', 'EQUAL', category))
         return query_collection(

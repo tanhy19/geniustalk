@@ -822,15 +822,70 @@ def add_tip():
     title = data.get("title", "")
     content = data.get("content") or data.get("body", "")
     category = data.get("category", "general")
+    is_active = data.get("active", data.get("is_active", True))
     if not title or not content:
         return make_response(False, error="Missing 'title' or 'content'", status_code=400)
-    add_safety_tip(category=category, title=title, content=content, created_by=data.get("created_by", "admin"))
-    return make_response(True, {"message": "Safety tip added"})
+    tip_id = add_safety_tip(
+        category=category,
+        title=title,
+        content=content,
+        created_by=data.get("created_by", "admin"),
+        is_active=is_active,
+    )
+    return make_response(True, {
+        "message": "Safety tip added",
+        "id": tip_id or "",
+        "title": title,
+        "content": content,
+        "category": category,
+        "active": bool(is_active),
+    })
 
 @app.route('/awareness/tips', methods=['GET'])
 def get_tips():
     category = request.args.get("category", None)
-    return make_response(True, get_safety_tips(category))
+    include_inactive = request.args.get("include_inactive", "false").lower() == "true"
+    return make_response(True, get_safety_tips(category, include_inactive=include_inactive))
+
+
+@app.route('/awareness/tip/<string:tip_id>', methods=['PUT'])
+def update_tip_endpoint(tip_id):
+    data = request.get_json() or {}
+    fields = {}
+    if "title" in data:
+        fields["title"] = data["title"]
+    if "content" in data:
+        fields["content"] = data["content"]
+    if "body" in data:
+        fields["content"] = data["body"]
+    if "category" in data:
+        fields["category"] = data["category"]
+    if "active" in data:
+        fields["is_active"] = bool(data["active"])
+    if "is_active" in data:
+        fields["is_active"] = bool(data["is_active"])
+
+    if not fields:
+        return make_response(False, error="No fields to update", status_code=400)
+
+    try:
+        ok = firebase.update_document("safety_tips", tip_id, fields)
+        if ok:
+            return make_response(True, {"updated": tip_id})
+        return make_response(False, error="Update failed")
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
+
+
+@app.route('/awareness/tip/<string:tip_id>', methods=['DELETE'])
+def delete_tip_endpoint(tip_id):
+    try:
+        ok = firebase.delete_document("safety_tips", tip_id)
+        if ok:
+            return make_response(True, {"deleted": tip_id})
+        return make_response(False, error="Delete failed")
+    except Exception as e:
+        return make_response(False, error=str(e), status_code=500)
 
 
 if __name__ == '__main__':
