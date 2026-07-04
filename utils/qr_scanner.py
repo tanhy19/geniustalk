@@ -4,21 +4,113 @@
 
 import os
 import cv2
+import numpy as np
+from PIL import Image
 try:
     from utils.link_verifier import verify_links, analyze_url, expand_url
 except ImportError:
     from link_verifier import verify_links, analyze_url, expand_url
 
 
+def _load_image_for_cv2(image_path):
+    """Load image for OpenCV; fallback to PIL for formats OpenCV may miss."""
+    img = cv2.imread(image_path)
+    if img is not None:
+        return img
+
+    try:
+        pil_img = Image.open(image_path).convert("RGB")
+        rgb = np.array(pil_img)
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
+
+
 def decode_qr(image_path):
     """Decodes QR code from image using OpenCV. Returns content string or None."""
+
+    def _normalize_data(data):
+        if isinstance(data, bytes):
+            try:
+                return data.decode("utf-8", errors="ignore").strip()
+            except Exception:
+                return None
+        if isinstance(data, str):
+            return data.strip() or None
+        return None
+
+    def _decode_once(detector, img_variant):
+        # 1) Standard single-QR path
+        data, _, _ = detector.detectAndDecode(img_variant)
+        normalized = _normalize_data(data)
+        if normalized:
+            return normalized
+
+        # 2) Multi-QR path: return the first non-empty payload
+        try:
+            ok, decoded_info, _, _ = detector.detectAndDecodeMulti(img_variant)
+            if ok and decoded_info:
+                for item in decoded_info:
+                    normalized = _normalize_data(item)
+                    if normalized:
+                        return normalized
+        except Exception:
+            pass
+
+        # 3) Curved QR path (supported in newer OpenCV builds)
+        try:
+            data, _, _ = detector.detectAndDecodeCurved(img_variant)
+            normalized = _normalize_data(data)
+            if normalized:
+                return normalized
+        except Exception:
+            pass
+
+        return None
+
     try:
-        img = cv2.imread(image_path)
+        img = _load_image_for_cv2(image_path)
         if img is None:
             return None
+
         detector = cv2.QRCodeDetector()
-        data, points, _ = detector.detectAndDecode(img)
-        return data if data else None
+
+        # Try original image first for speed.
+        data = _decode_once(detector, img)
+        if data:
+            return data
+
+        # Real-world QR photos often fail due to blur/lighting/skew.
+        # Try robust grayscale + contrast + threshold + resizing variants.
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        variants = [
+            gray,
+            cv2.equalizeHist(gray),
+            cv2.GaussianBlur(gray, (3, 3), 0),
+            cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                2,
+            ),
+        ]
+
+        for scale in (1.5, 2.0, 3.0):
+            resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            variants.append(resized)
+            variants.append(cv2.equalizeHist(resized))
+
+        kernel = np.ones((3, 3), np.uint8)
+        variants.append(cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel))
+
+        for variant in variants:
+            data = _decode_once(detector, variant)
+            if data:
+                return data
+
+        return None
     except Exception as e:
         print(f"[decode_qr] failed: {e}")
         return None
