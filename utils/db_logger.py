@@ -901,7 +901,7 @@ def enforce_trust_score_ban(user_id, triggered_by='system', source_report_id=Non
         ban_user(
             user_id=user_id,
             ban_type='permanent',
-            reason='Auto permanent ban: trust score reached 0',
+            reason='Auto permanent ban because trust score reached 0',
             banned_by=triggered_by,
             source_report_id=source_report_id,
         )
