@@ -3,8 +3,12 @@
 # Handles: extension checking, MIME verification, dangerous file detection
 
 import os
-import magic  # detects real MIME type
 import json
+
+try:
+    import magic  # detects real MIME type
+except ImportError:
+    magic = None
 
 # ─────────────────────────────────────────
 # DANGEROUS FILE DEFINITIONS
