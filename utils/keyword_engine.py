@@ -97,7 +97,7 @@ def keyword_scan(message):
     if ml_result == "phishing":
         total_score += 45
         matches.append({
-            "phrase"  : "ML model detected phishing pattern",
+            "phrase"  : "Message pattern strongly matches known scam examples",
             "weight"  : 45,
             "category": "ml_model"
         })

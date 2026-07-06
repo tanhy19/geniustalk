@@ -379,22 +379,22 @@ def analyze_text(text, source="direct"):
 
     if keyword_result["matched_high"]:
         summary_parts.append(
-            f"High risk keywords detected: {', '.join(keyword_result['matched_high'][:3])}"
+            f"Scam-related claims detected in text: {', '.join(keyword_result['matched_high'][:3])}"
         )
     if keyword_result["matched_medium"]:
         summary_parts.append(
-            f"Suspicious phrases found: {', '.join(keyword_result['matched_medium'][:3])}"
+            f"Additional risky wording detected: {', '.join(keyword_result['matched_medium'][:3])}"
         )
     if url_result["suspicious_urls"]:
         summary_parts.append(
-            f"Suspicious URLs found: {', '.join(url_result['suspicious_urls'][:2])}"
+            f"Potential scam link detected: {', '.join(url_result['suspicious_urls'][:2])}"
         )
     if "THREATENING TONE" in tone_result["tone_labels"]:
-        summary_parts.append("Message uses threatening language")
+        summary_parts.append("Message uses threats to pressure action")
     if "HIGH URGENCY" in tone_result["tone_labels"]:
-        summary_parts.append("Message creates artificial urgency")
+        summary_parts.append("Message pushes urgent action to rush the recipient")
     if not summary_parts:
-        summary_parts.append("No significant scam indicators detected")
+        summary_parts.append("No clear scam indicators were detected in the text")
 
     return {
         "risk_score"       : final_score,

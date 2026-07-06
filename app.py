@@ -65,6 +65,7 @@ from utils.db_logger      import (
 from utils.keyword_engine import keyword_scan
 from utils.qr_scanner     import scan_qr, analyze_qr_content
 from utils.link_verifier  import verify_links
+from utils.email_sender   import send_unlock_otp_email
 from utils.firebase_config import FirebaseConfig
 
 app = Flask(__name__)
@@ -705,6 +706,18 @@ def auth_request_unlock_otp_endpoint():
     if not otp_result.get('success'):
         return make_response(False, error=otp_result.get('error', 'Failed to create OTP'), status_code=500)
 
+    email_result = send_unlock_otp_email(
+        recipient_email=email,
+        otp_code=otp_result.get('otp_code', ''),
+        expires_at=otp_result.get('expires_at'),
+    )
+    if not email_result.get('success'):
+        return make_response(
+            False,
+            error=email_result.get('error', 'Failed to send OTP email'),
+            status_code=500,
+        )
+
     ip_address = _client_ip(request)
     log_security_event(
         event_type='unlock_otp_requested',
@@ -716,14 +729,11 @@ def auth_request_unlock_otp_endpoint():
         details='Unlock OTP requested',
     )
 
-    # Production email dispatch can be plugged in here. For now OTP is returned
-    # so mobile/web clients can complete unlock flow without SMTP setup.
     return make_response(True, {
         'email': email,
         'is_locked': True,
-        'otp_code': otp_result.get('otp_code'),
         'expires_at': otp_result.get('expires_at'),
-        'message': 'Unlock OTP created. Deliver this code to the user via email service.',
+        'message': 'Unlock OTP sent to your email address.',
     })
 
 
