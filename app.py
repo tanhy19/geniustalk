@@ -802,6 +802,14 @@ def security_activity_endpoint():
     end = (request.args.get('end') or '').strip() or None
     limit = request.args.get('limit', default=100, type=int)
 
+    # Prevent broad admin audit queries from returning everyone.
+    if role == 'admin' and not user_id and not email:
+        return make_response(
+            False,
+            error='Admin security activity requires email or user_id filter',
+            status_code=400,
+        )
+
     items = get_security_activity(
         user_id=user_id or None,
         email=email or None,
