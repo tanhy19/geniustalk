@@ -5,7 +5,9 @@
 
 import os
 import json
-from datetime import datetime, timezone
+import hashlib
+import random
+from datetime import datetime, timezone, timedelta
 from utils.firebase_config import (
     add_document,
     set_document,
@@ -14,6 +16,44 @@ from utils.firebase_config import (
     query_collection,
     increment_field
 )
+
+
+FAILED_LOGIN_LIMIT = 5
+LOCKOUT_MINUTES = 15
+OTP_TTL_MINUTES = 10
+
+
+def _now_utc():
+    return datetime.now(timezone.utc)
+
+
+def _parse_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+def _minutes_left(until_dt):
+    if not until_dt:
+        return 0
+    diff = int((until_dt - _now_utc()).total_seconds() / 60)
+    return max(diff, 0)
+
+
+def _email_key(email):
+    normalized = (email or '').strip().lower()
+    digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:24]
+    return f'email_{digest}'
 
 # ─────────────────────────────────────────
 # INITIALIZE
@@ -343,6 +383,288 @@ def is_device_banned(device_id):
     except Exception as e:
         print(f"is_device_banned error: {e}")
         return None
+
+
+# ─────────────────────────────────────────
+# AUTH SECURITY (FAILED LOGIN PROTECTION)
+# ─────────────────────────────────────────
+
+def get_login_security_state(email):
+    """Returns lockout state for an email and auto-unlocks expired locks."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {
+                'email': '',
+                'failed_attempts': 0,
+                'attempts_left': FAILED_LOGIN_LIMIT,
+                'is_locked': False,
+                'lock_until': None,
+                'minutes_until_unlock': 0,
+            }
+
+        doc_id = _email_key(normalized)
+        state = get_document('login_protection', doc_id) or {}
+
+        failed_attempts = int(state.get('failed_attempts', 0) or 0)
+        lock_until_raw = state.get('lock_until')
+        lock_until = _parse_datetime(lock_until_raw)
+        is_locked = bool(state.get('is_locked', False))
+
+        if is_locked and lock_until and _now_utc() >= lock_until:
+            is_locked = False
+            failed_attempts = 0
+            lock_until = None
+            update_document('login_protection', doc_id, {
+                'is_locked': False,
+                'failed_attempts': 0,
+                'lock_until': None,
+                'updated_at': _now_utc().isoformat(),
+            })
+
+        minutes_until_unlock = _minutes_left(lock_until)
+        attempts_left = max(FAILED_LOGIN_LIMIT - failed_attempts, 0)
+
+        return {
+            'email': normalized,
+            'failed_attempts': failed_attempts,
+            'attempts_left': attempts_left,
+            'is_locked': is_locked,
+            'lock_until': lock_until.isoformat() if lock_until else None,
+            'minutes_until_unlock': minutes_until_unlock,
+        }
+    except Exception as e:
+        print(f"get_login_security_state error: {e}")
+        return {
+            'email': (email or '').strip().lower(),
+            'failed_attempts': 0,
+            'attempts_left': FAILED_LOGIN_LIMIT,
+            'is_locked': False,
+            'lock_until': None,
+            'minutes_until_unlock': 0,
+        }
+
+
+def reset_failed_login_attempts(email):
+    """Clears failed login attempts and unlocks an account."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return False
+        doc_id = _email_key(normalized)
+        return set_document('login_protection', doc_id, {
+            'email': normalized,
+            'failed_attempts': 0,
+            'is_locked': False,
+            'lock_until': None,
+            'updated_at': _now_utc().isoformat(),
+        })
+    except Exception as e:
+        print(f"reset_failed_login_attempts error: {e}")
+        return False
+
+
+def record_failed_login_attempt(email):
+    """Increments failed attempts and locks account after threshold."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return get_login_security_state(normalized)
+
+        state = get_login_security_state(normalized)
+        doc_id = _email_key(normalized)
+
+        if state.get('is_locked'):
+            return state
+
+        failed_attempts = int(state.get('failed_attempts', 0) or 0) + 1
+        is_locked = failed_attempts >= FAILED_LOGIN_LIMIT
+        lock_until = (_now_utc() + timedelta(minutes=LOCKOUT_MINUTES)) if is_locked else None
+
+        set_document('login_protection', doc_id, {
+            'email': normalized,
+            'failed_attempts': failed_attempts,
+            'is_locked': is_locked,
+            'lock_until': lock_until.isoformat() if lock_until else None,
+            'last_failed_at': _now_utc().isoformat(),
+            'updated_at': _now_utc().isoformat(),
+        })
+
+        return {
+            'email': normalized,
+            'failed_attempts': failed_attempts,
+            'attempts_left': max(FAILED_LOGIN_LIMIT - failed_attempts, 0),
+            'is_locked': is_locked,
+            'lock_until': lock_until.isoformat() if lock_until else None,
+            'minutes_until_unlock': LOCKOUT_MINUTES if is_locked else 0,
+        }
+    except Exception as e:
+        print(f"record_failed_login_attempt error: {e}")
+        return get_login_security_state(email)
+
+
+def create_unlock_otp(email):
+    """Creates a one-time code to unlock a temporarily locked account."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {'success': False, 'error': 'Email is required'}
+
+        otp_code = ''.join(str(random.randint(0, 9)) for _ in range(6))
+        doc_id = _email_key(normalized)
+        expires_at = _now_utc() + timedelta(minutes=OTP_TTL_MINUTES)
+
+        set_document('unlock_otps', doc_id, {
+            'email': normalized,
+            'otp_code': otp_code,
+            'expires_at': expires_at.isoformat(),
+            'verified': False,
+            'created_at': _now_utc().isoformat(),
+        })
+
+        return {
+            'success': True,
+            'email': normalized,
+            'otp_code': otp_code,
+            'expires_at': expires_at.isoformat(),
+        }
+    except Exception as e:
+        print(f"create_unlock_otp error: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def verify_unlock_otp(email, otp_code):
+    """Validates OTP and unlocks account if it matches and is not expired."""
+    try:
+        normalized = (email or '').strip().lower()
+        provided = (otp_code or '').strip()
+        if not normalized or not provided:
+            return {'success': False, 'error': 'Email and OTP are required'}
+
+        doc_id = _email_key(normalized)
+        otp_doc = get_document('unlock_otps', doc_id) or {}
+
+        stored = str(otp_doc.get('otp_code', ''))
+        expires_at = _parse_datetime(otp_doc.get('expires_at'))
+        verified = otp_doc.get('verified', False)
+
+        if not stored:
+            return {'success': False, 'error': 'No OTP requested'}
+        if verified:
+            return {'success': False, 'error': 'OTP already used'}
+        if not expires_at or _now_utc() > expires_at:
+            return {'success': False, 'error': 'OTP expired'}
+        if stored != provided:
+            return {'success': False, 'error': 'Invalid OTP'}
+
+        update_document('unlock_otps', doc_id, {
+            'verified': True,
+            'verified_at': _now_utc().isoformat(),
+        })
+        reset_failed_login_attempts(normalized)
+        return {'success': True, 'email': normalized}
+    except Exception as e:
+        print(f"verify_unlock_otp error: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+# ─────────────────────────────────────────
+# SECURITY ACTIVITY LOG
+# ─────────────────────────────────────────
+
+def log_security_event(
+    event_type,
+    status='info',
+    user_id=None,
+    email=None,
+    role='user',
+    device_id=None,
+    device_name=None,
+    ip_address=None,
+    location=None,
+    details=None,
+    is_suspicious=False,
+    suspicious_reason=None,
+):
+    """Persists user/admin security and account activity for audit viewing."""
+    try:
+        return add_document('security_activity', {
+            'event_type': event_type,
+            'status': status,
+            'user_id': user_id or '',
+            'email': (email or '').strip().lower(),
+            'role': role or 'user',
+            'device_id': device_id or '',
+            'device_name': device_name or '',
+            'ip_address': ip_address or 'unknown',
+            'location': location or 'unknown',
+            'details': details or '',
+            'is_suspicious': bool(is_suspicious),
+            'suspicious_reason': suspicious_reason or '',
+            'timestamp': _now_utc().isoformat(),
+        })
+    except Exception as e:
+        print(f"log_security_event error: {e}")
+        return None
+
+
+def get_security_activity(
+    user_id=None,
+    email=None,
+    role=None,
+    event_type=None,
+    start_iso=None,
+    end_iso=None,
+    limit=100,
+):
+    """Returns security activity logs with optional filters."""
+    try:
+        filters = []
+        if user_id:
+            filters.append(('user_id', 'EQUAL', user_id))
+        elif email:
+            filters.append(('email', 'EQUAL', (email or '').strip().lower()))
+        if role:
+            filters.append(('role', 'EQUAL', role))
+        if event_type:
+            filters.append(('event_type', 'EQUAL', event_type))
+
+        logs = query_collection(
+            'security_activity',
+            filters=filters if filters else None,
+            order_by='timestamp',
+            limit=max(1, min(int(limit or 100), 500)),
+        )
+
+        start_dt = _parse_datetime(start_iso)
+        end_dt = _parse_datetime(end_iso)
+        output = []
+        for item in logs:
+            ts = _parse_datetime(item.get('timestamp'))
+            if start_dt and ts and ts < start_dt:
+                continue
+            if end_dt and ts and ts > end_dt:
+                continue
+            output.append(item)
+        output.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        return output
+    except Exception as e:
+        print(f"get_security_activity error: {e}")
+        return []
+
+
+def get_recent_suspicious_activity(user_id=None, email=None, limit=20):
+    """Returns suspicious activity entries for alert banners."""
+    try:
+        items = get_security_activity(
+            user_id=user_id,
+            email=email,
+            limit=max(1, min(int(limit or 20), 200)),
+        )
+        return [row for row in items if row.get('is_suspicious')]
+    except Exception as e:
+        print(f"get_recent_suspicious_activity error: {e}")
+        return []
 
 
 def unban_device(device_id, unbanned_by='admin'):

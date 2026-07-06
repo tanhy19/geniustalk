@@ -127,7 +127,8 @@ def analyze_qr_content(qr_content):
         "risk_label"   : "LOW",
         "is_blocked"   : False,
         "flags"        : [],
-        "expanded_url" : None
+        "expanded_url" : None,
+        "reason"       : ""
     }
 
     if not qr_content:
@@ -192,6 +193,22 @@ def analyze_qr_content(qr_content):
         result["risk_label"] = "LOW"
 
     result["flags"] = list(set(result["flags"]))
+
+    if result["content_type"] in ("url", "text_with_url"):
+        shown_url = result["expanded_url"] or qr_content
+        if score >= 70:
+            result["reason"] = f"QR contains suspicious URL: {shown_url}"
+        elif score >= 40:
+            result["reason"] = (
+                f"QR contains potentially risky URL: {shown_url}. Open at your own risk."
+            )
+        else:
+            result["reason"] = f"QR URL detected: {shown_url}"
+    elif result["flags"]:
+        result["reason"] = result["flags"][0]
+    else:
+        result["reason"] = "No major QR scam indicators detected"
+
     return result
 
 

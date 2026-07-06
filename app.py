@@ -52,6 +52,14 @@ from utils.db_logger      import (
     get_user_display_name,
     confirm_user_report_scam,
     enforce_trust_score_ban,
+    get_login_security_state,
+    record_failed_login_attempt,
+    reset_failed_login_attempts,
+    create_unlock_otp,
+    verify_unlock_otp,
+    log_security_event,
+    get_security_activity,
+    get_recent_suspicious_activity,
 )
 
 from utils.keyword_engine import keyword_scan
@@ -85,6 +93,46 @@ def make_response(success, data=None, error=None, status_code=200):
         "data"   : data,
         "error"  : error
     }), status_code
+
+
+def _client_ip(req):
+    forwarded = req.headers.get('X-Forwarded-For', '')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    real_ip = req.headers.get('X-Real-IP', '').strip()
+    if real_ip:
+        return real_ip
+    return (req.remote_addr or 'unknown').strip()
+
+
+def _approx_location(ip_address):
+    if not ip_address or ip_address == 'unknown':
+        return 'unknown'
+    if ':' in ip_address:
+        return 'approx-ipv6'
+    parts = ip_address.split('.')
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.x.x"
+    return 'approx-ip'
+
+
+def _is_new_device_login(user_id, email, device_id):
+    if not device_id:
+        return False
+    key = (user_id or email or '').strip().lower()
+    if not key:
+        return False
+    doc_id = f"security_state_{key.replace('@', '_').replace('.', '_')}"
+    state = firebase.get_document('user_security_state', doc_id) or {}
+    last_device = (state.get('last_device_id') or '').strip()
+    is_new = bool(last_device) and last_device != device_id
+    firebase.set_document('user_security_state', doc_id, {
+        'user_id': user_id or '',
+        'email': (email or '').strip().lower(),
+        'last_device_id': device_id,
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    })
+    return is_new
 
 
 # ─────────────────────────────────────────
@@ -507,6 +555,272 @@ def auth_access_check_endpoint():
         "user_ban_details": user_ban,
         "device_ban_details": device_ban
     })
+
+
+@app.route('/auth/login-status', methods=['POST'])
+def auth_login_status_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return make_response(False, error='Missing email', status_code=400)
+
+    state = get_login_security_state(email)
+    return make_response(True, {
+        'email': state.get('email'),
+        'is_locked': state.get('is_locked', False),
+        'failed_attempts': state.get('failed_attempts', 0),
+        'attempts_left': state.get('attempts_left', 5),
+        'lock_until': state.get('lock_until'),
+        'minutes_until_unlock': state.get('minutes_until_unlock', 0),
+    })
+
+
+@app.route('/auth/login-attempt', methods=['POST'])
+def auth_login_attempt_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return make_response(False, error='Missing email', status_code=400)
+
+    user_id = (data.get('user_id') or '').strip()
+    role = (data.get('role') or 'user').strip().lower()
+    device_id = (data.get('device_id') or '').strip()
+    device_name = (data.get('device_name') or '').strip()
+    success = bool(data.get('success', False))
+    reason = (data.get('reason') or '').strip()
+
+    ip_address = _client_ip(request)
+    location = _approx_location(ip_address)
+
+    if success:
+        reset_failed_login_attempts(email)
+        is_new_device = _is_new_device_login(user_id, email, device_id)
+        suspicious_reason = 'new_device_login' if is_new_device else ''
+
+        log_security_event(
+            event_type='user_logged_in',
+            status='success',
+            user_id=user_id,
+            email=email,
+            role=role,
+            device_id=device_id,
+            device_name=device_name,
+            ip_address=ip_address,
+            location=location,
+            details='Successful login',
+            is_suspicious=is_new_device,
+            suspicious_reason=suspicious_reason,
+        )
+
+        if is_new_device:
+            create_security_alert(
+                title='Suspicious login detected',
+                message=f'New device login for {email}',
+                severity='high',
+                created_by='system',
+            )
+
+        return make_response(True, {
+            'is_locked': False,
+            'failed_attempts': 0,
+            'attempts_left': 5,
+            'suspicious': is_new_device,
+            'suspicious_reason': suspicious_reason,
+        })
+
+    state = record_failed_login_attempt(email)
+    is_locked = state.get('is_locked', False)
+    failed_attempts = int(state.get('failed_attempts', 0) or 0)
+
+    is_suspicious = failed_attempts >= 5
+    suspicious_reason = 'five_failed_logins' if is_suspicious else ''
+
+    log_security_event(
+        event_type='failed_login_attempt',
+        status='failed',
+        user_id=user_id,
+        email=email,
+        role=role,
+        device_id=device_id,
+        device_name=device_name,
+        ip_address=ip_address,
+        location=location,
+        details=reason or 'Incorrect password',
+        is_suspicious=is_suspicious,
+        suspicious_reason=suspicious_reason,
+    )
+
+    if is_locked:
+        create_security_alert(
+            title='Account temporarily locked',
+            message=f'Account {email} locked after 5 failed login attempts.',
+            severity='high',
+            created_by='system',
+        )
+        log_security_event(
+            event_type='account_locked',
+            status='info',
+            user_id=user_id,
+            email=email,
+            role=role,
+            device_id=device_id,
+            device_name=device_name,
+            ip_address=ip_address,
+            location=location,
+            details='Account locked due to multiple failed login attempts',
+            is_suspicious=True,
+            suspicious_reason='five_failed_logins',
+        )
+
+    return make_response(True, {
+        'is_locked': is_locked,
+        'failed_attempts': failed_attempts,
+        'attempts_left': state.get('attempts_left', 0),
+        'lock_until': state.get('lock_until'),
+        'minutes_until_unlock': state.get('minutes_until_unlock', 0),
+        'message': (
+            'Your account has been temporarily locked due to multiple failed login attempts.'
+            if is_locked else
+            'Incorrect credentials.'
+        ),
+    })
+
+
+@app.route('/auth/unlock/request-otp', methods=['POST'])
+def auth_request_unlock_otp_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return make_response(False, error='Missing email', status_code=400)
+
+    state = get_login_security_state(email)
+    if not state.get('is_locked', False):
+        return make_response(True, {
+            'email': email,
+            'is_locked': False,
+            'message': 'Account is not locked.',
+        })
+
+    otp_result = create_unlock_otp(email)
+    if not otp_result.get('success'):
+        return make_response(False, error=otp_result.get('error', 'Failed to create OTP'), status_code=500)
+
+    ip_address = _client_ip(request)
+    log_security_event(
+        event_type='unlock_otp_requested',
+        status='info',
+        email=email,
+        role='user',
+        ip_address=ip_address,
+        location=_approx_location(ip_address),
+        details='Unlock OTP requested',
+    )
+
+    # Production email dispatch can be plugged in here. For now OTP is returned
+    # so mobile/web clients can complete unlock flow without SMTP setup.
+    return make_response(True, {
+        'email': email,
+        'is_locked': True,
+        'otp_code': otp_result.get('otp_code'),
+        'expires_at': otp_result.get('expires_at'),
+        'message': 'Unlock OTP created. Deliver this code to the user via email service.',
+    })
+
+
+@app.route('/auth/unlock/verify-otp', methods=['POST'])
+def auth_verify_unlock_otp_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    otp_code = (data.get('otp_code') or '').strip()
+    if not email or not otp_code:
+        return make_response(False, error='Missing email or otp_code', status_code=400)
+
+    result = verify_unlock_otp(email, otp_code)
+    if not result.get('success'):
+        return make_response(False, error=result.get('error', 'OTP verification failed'), status_code=400)
+
+    ip_address = _client_ip(request)
+    log_security_event(
+        event_type='otp_verified',
+        status='success',
+        email=email,
+        role='user',
+        ip_address=ip_address,
+        location=_approx_location(ip_address),
+        details='Unlock OTP verified',
+    )
+    log_security_event(
+        event_type='account_unlocked',
+        status='success',
+        email=email,
+        role='user',
+        ip_address=ip_address,
+        location=_approx_location(ip_address),
+        details='Account unlocked via OTP',
+    )
+
+    return make_response(True, {
+        'email': email,
+        'is_locked': False,
+        'message': 'Account unlocked successfully.',
+    })
+
+
+@app.route('/security/event', methods=['POST'])
+def security_event_endpoint():
+    data = request.get_json() or {}
+    event_type = (data.get('event_type') or '').strip()
+    if not event_type:
+        return make_response(False, error='Missing event_type', status_code=400)
+
+    ip_address = _client_ip(request)
+    location = _approx_location(ip_address)
+    event_id = log_security_event(
+        event_type=event_type,
+        status=(data.get('status') or 'info').strip(),
+        user_id=(data.get('user_id') or '').strip(),
+        email=(data.get('email') or '').strip().lower(),
+        role=(data.get('role') or 'user').strip().lower(),
+        device_id=(data.get('device_id') or '').strip(),
+        device_name=(data.get('device_name') or '').strip(),
+        ip_address=ip_address,
+        location=location,
+        details=(data.get('details') or '').strip(),
+        is_suspicious=bool(data.get('is_suspicious', False)),
+        suspicious_reason=(data.get('suspicious_reason') or '').strip(),
+    )
+    return make_response(True, {'id': str(event_id) if event_id else ''})
+
+
+@app.route('/security/activity', methods=['GET'])
+def security_activity_endpoint():
+    user_id = (request.args.get('user_id') or '').strip()
+    email = (request.args.get('email') or '').strip().lower()
+    role = (request.args.get('role') or '').strip().lower() or None
+    event_type = (request.args.get('event_type') or '').strip() or None
+    start = (request.args.get('start') or '').strip() or None
+    end = (request.args.get('end') or '').strip() or None
+    limit = request.args.get('limit', default=100, type=int)
+
+    items = get_security_activity(
+        user_id=user_id or None,
+        email=email or None,
+        role=role,
+        event_type=event_type,
+        start_iso=start,
+        end_iso=end,
+        limit=limit,
+    )
+    return make_response(True, items)
+
+
+@app.route('/security/suspicious', methods=['GET'])
+def security_suspicious_endpoint():
+    user_id = (request.args.get('user_id') or '').strip() or None
+    email = (request.args.get('email') or '').strip().lower() or None
+    limit = request.args.get('limit', default=20, type=int)
+    items = get_recent_suspicious_activity(user_id=user_id, email=email, limit=limit)
+    return make_response(True, items)
 
 
 # ─────────────────────────────────────────
