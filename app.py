@@ -619,6 +619,10 @@ def auth_login_attempt_endpoint():
                 message=f'New device login for {email}',
                 severity='high',
                 created_by='system',
+                audience='private',
+                target_user_id=user_id,
+                target_email=email,
+                category='account_security',
             )
 
         return make_response(True, {
@@ -657,6 +661,10 @@ def auth_login_attempt_endpoint():
             message=f'Account {email} locked after 5 failed login attempts.',
             severity='high',
             created_by='system',
+            audience='private',
+            target_user_id=user_id,
+            target_email=email,
+            category='account_security',
         )
         log_security_event(
             event_type='account_locked',
@@ -1073,13 +1081,27 @@ def create_alert():
         title = title, message = message,
         severity = data.get("severity", "medium"),
         created_by = data.get("created_by", "admin"),
-        expires_at = data.get("expires_at", None)
+        expires_at = data.get("expires_at", None),
+        audience = data.get("audience", "public"),
+        target_user_id = data.get("target_user_id", ""),
+        target_email = data.get("target_email", ""),
+        category = data.get("category", "general"),
     )
     return make_response(True, {"message": "Security alert created", "id": str(result) if result else ""})
 
 @app.route('/awareness/alerts', methods=['GET'])
 def get_alerts():
-    return make_response(True, get_active_alerts())
+    audience = (request.args.get('audience') or '').strip().lower() or None
+    user_id = (request.args.get('user_id') or '').strip() or None
+    email = (request.args.get('email') or '').strip().lower() or None
+    category = (request.args.get('category') or '').strip().lower() or None
+    alerts = get_active_alerts(
+        audience=audience,
+        target_user_id=user_id,
+        target_email=email,
+        category=category,
+    )
+    return make_response(True, alerts)
 
 @app.route('/awareness/alert/<string:alert_id>/deactivate', methods=['POST'])
 def deactivate_alert_endpoint(alert_id):

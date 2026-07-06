@@ -55,6 +55,74 @@ def _email_key(email):
     digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:24]
     return f'email_{digest}'
 
+
+def _normalize_alert_audience(value):
+    normalized = (value or 'public').strip().lower()
+    return 'private' if normalized == 'private' else 'public'
+
+
+def _normalize_alert_category(value):
+    normalized = (value or 'general').strip().lower()
+    return normalized or 'general'
+
+
+def _is_private_system_alert(alert):
+    created_by = (alert.get('created_by') or '').strip().lower()
+    audience = _normalize_alert_audience(alert.get('audience'))
+    category = _normalize_alert_category(alert.get('category'))
+    if audience == 'private' or category == 'account_security':
+        return True
+
+    if created_by != 'system':
+        return False
+
+    haystack = ' '.join([
+        str(alert.get('title') or ''),
+        str(alert.get('message') or ''),
+        str(alert.get('details') or ''),
+    ]).lower()
+    private_markers = [
+        'account temporarily locked',
+        'locked after 5 failed login attempts',
+        'new device login',
+        'failed login attempts',
+        'unlock otp',
+        'account unlocked',
+    ]
+    return any(marker in haystack for marker in private_markers)
+
+
+def _matches_private_alert_target(alert, target_user_id=None, target_email=None):
+    normalized_user_id = (target_user_id or '').strip()
+    normalized_email = (target_email or '').strip().lower()
+    if not normalized_user_id and not normalized_email:
+        return True
+
+    alert_user_id = (alert.get('target_user_id') or '').strip()
+    alert_email = (alert.get('target_email') or '').strip().lower()
+    if normalized_user_id and alert_user_id and alert_user_id == normalized_user_id:
+        return True
+    if normalized_email and alert_email and alert_email == normalized_email:
+        return True
+    return False
+
+
+def _dedupe_activity_rows(rows):
+    deduped = []
+    seen = set()
+    for row in rows:
+        key = row.get('id') or (
+            row.get('event_type'),
+            row.get('timestamp'),
+            row.get('email'),
+            row.get('user_id'),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
 # ─────────────────────────────────────────
 # INITIALIZE
 # ─────────────────────────────────────────
@@ -619,22 +687,37 @@ def get_security_activity(
 ):
     """Returns security activity logs with optional filters."""
     try:
-        filters = []
-        if user_id:
-            filters.append(('user_id', 'EQUAL', user_id))
-        elif email:
-            filters.append(('email', 'EQUAL', (email or '').strip().lower()))
-        if role:
-            filters.append(('role', 'EQUAL', role))
-        if event_type:
-            filters.append(('event_type', 'EQUAL', event_type))
+        normalized_user_id = (user_id or '').strip()
+        normalized_email = (email or '').strip().lower()
+        max_limit = max(1, min(int(limit or 100), 500))
 
-        logs = query_collection(
-            'security_activity',
-            filters=filters if filters else None,
-            order_by='timestamp',
-            limit=max(1, min(int(limit or 100), 500)),
-        )
+        def _query(identity_filter=None):
+            filters = []
+            if identity_filter is not None:
+                filters.append(identity_filter)
+            if role:
+                filters.append(('role', 'EQUAL', role))
+            if event_type:
+                filters.append(('event_type', 'EQUAL', event_type))
+
+            return query_collection(
+                'security_activity',
+                filters=filters if filters else None,
+                order_by='timestamp',
+                limit=max_limit,
+            )
+
+        logs = []
+        if normalized_user_id and normalized_email:
+            logs.extend(_query(('user_id', 'EQUAL', normalized_user_id)))
+            logs.extend(_query(('email', 'EQUAL', normalized_email)))
+            logs = _dedupe_activity_rows(logs)
+        elif normalized_user_id:
+            logs = _query(('user_id', 'EQUAL', normalized_user_id))
+        elif normalized_email:
+            logs = _query(('email', 'EQUAL', normalized_email))
+        else:
+            logs = _query()
 
         start_dt = _parse_datetime(start_iso)
         end_dt = _parse_datetime(end_iso)
@@ -647,7 +730,7 @@ def get_security_activity(
                 continue
             output.append(item)
         output.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        return output
+        return output[:max_limit]
     except Exception as e:
         print(f"get_security_activity error: {e}")
         return []
@@ -764,31 +847,77 @@ def get_user_trust_score(user_id):
 # ─────────────────────────────────────────
 
 def create_security_alert(title, message, severity='medium',
-                          created_by='admin', expires_at=None):
+                          created_by='admin', expires_at=None,
+                          audience='public', target_user_id=None,
+                          target_email=None, category='general'):
     """Creates a security alert."""
     try:
+        normalized_audience = _normalize_alert_audience(audience)
+        normalized_email = (target_email or '').strip().lower()
+        normalized_category = _normalize_alert_category(category)
         add_document('security_alerts', {
-            'title'     : title,
-            'message'   : message,
-            'severity'  : severity,
-            'created_by': created_by,
-            'is_active' : True,
-            'created_at': datetime.now().isoformat(),
-            'expires_at': expires_at
+            'title'         : title,
+            'message'       : message,
+            'severity'      : severity,
+            'created_by'    : created_by,
+            'is_active'     : True,
+            'created_at'    : datetime.now().isoformat(),
+            'expires_at'    : expires_at,
+            'audience'      : normalized_audience,
+            'target_user_id': target_user_id or '',
+            'target_email'  : normalized_email,
+            'category'      : normalized_category,
         })
         log_admin_action('create_alert', created_by, target=title)
     except Exception as e:
         print(f"create_security_alert error: {e}")
 
 
-def get_active_alerts():
+def get_active_alerts(audience=None, target_user_id=None,
+                      target_email=None, category=None):
     """Returns all active security alerts."""
     try:
-        return query_collection(
+        alerts = query_collection(
             'security_alerts',
             filters=[('is_active', 'EQUAL', True)],
             order_by='created_at'
         )
+        now = _now_utc()
+        normalized_audience = (audience or '').strip().lower()
+        normalized_category = _normalize_alert_category(category) if category else None
+        normalized_target_user_id = (target_user_id or '').strip()
+        normalized_target_email = (target_email or '').strip().lower()
+
+        filtered = []
+        for alert in alerts:
+            expires_at = _parse_datetime(alert.get('expires_at'))
+            if expires_at and expires_at <= now:
+                continue
+
+            alert_audience = _normalize_alert_audience(alert.get('audience'))
+            if normalized_audience == 'public':
+                if alert_audience != 'public' or _is_private_system_alert(alert):
+                    continue
+            elif normalized_audience == 'private':
+                if alert_audience != 'private':
+                    continue
+                if not _matches_private_alert_target(
+                    alert,
+                    target_user_id=normalized_target_user_id,
+                    target_email=normalized_target_email,
+                ):
+                    continue
+            elif normalized_audience and alert_audience != normalized_audience:
+                continue
+
+            alert_category = _normalize_alert_category(alert.get('category'))
+            if normalized_category and alert_category != normalized_category:
+                continue
+
+            filtered.append(alert)
+
+        filtered.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        return filtered
     except Exception as e:
         print(f"get_active_alerts error: {e}")
         return []
