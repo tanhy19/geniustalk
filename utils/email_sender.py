@@ -1,42 +1,24 @@
 import os
-import smtplib
-from email.message import EmailMessage
+import requests
 
 
-def _bool_env(name, default=False):
-    value = (os.getenv(name) or '').strip().lower()
-    if not value:
-        return default
-    return value in {'1', 'true', 'yes', 'on'}
+BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email'
 
 
 def _send_otp_email(recipient_email, otp_code, expires_at=None, purpose='unlock'):
     """
-    Shared SMTP sender for both unlock-account OTPs and login-MFA OTPs.
+    Shared Brevo API sender for both unlock-account OTPs and login-MFA OTPs.
     Required env vars:
-      SMTP_HOST, SMTP_PORT, SMTP_FROM_EMAIL
-    Optional:
-      SMTP_USER, SMTP_PASSWORD, SMTP_USE_TLS(true/false)
+      BREVO_API_KEY, BREVO_FROM_EMAIL
     """
-    smtp_host = (os.getenv('SMTP_HOST') or '').strip()
-    smtp_port_raw = (os.getenv('SMTP_PORT') or '587').strip()
-    smtp_user = (os.getenv('SMTP_USER') or '').strip()
-    smtp_password = (os.getenv('SMTP_PASSWORD') or '').strip()
-    from_email = (os.getenv('SMTP_FROM_EMAIL') or smtp_user).strip()
-    use_tls = _bool_env('SMTP_USE_TLS', default=True)
+    api_key = (os.getenv('BREVO_API_KEY') or '').strip()
+    from_email = (os.getenv('BREVO_FROM_EMAIL') or '').strip()
+    from_name = (os.getenv('BREVO_FROM_NAME') or 'GeniusTalk Security').strip()
 
-    if not smtp_host or not from_email:
+    if not api_key or not from_email:
         return {
             'success': False,
-            'error': 'Email service is not configured (SMTP_HOST/SMTP_FROM_EMAIL).',
-        }
-
-    try:
-        smtp_port = int(smtp_port_raw)
-    except Exception:
-        return {
-            'success': False,
-            'error': 'Invalid SMTP_PORT configuration.',
+            'error': 'Email service is not configured (BREVO_API_KEY/BREVO_FROM_EMAIL).',
         }
 
     recipient = (recipient_email or '').strip().lower()
@@ -57,22 +39,38 @@ def _send_otp_email(recipient_email, otp_code, expires_at=None, purpose='unlock'
         '',
         'If this was not you, please ignore this email and consider changing your password.',
     ])
+    text_content = '\n'.join(body_lines)
+    html_content = '<br>'.join(line if line else '&nbsp;' for line in body_lines)
 
-    message = EmailMessage()
-    message['Subject'] = subject
-    message['From'] = from_email
-    message['To'] = recipient
-    message.set_content('\n'.join(body_lines))
+    payload = {
+        'sender': {'name': from_name, 'email': from_email},
+        'to': [{'email': recipient}],
+        'subject': subject,
+        'htmlContent': f'<html><body><p>{html_content}</p></body></html>',
+        'textContent': text_content,
+    }
+
+    headers = {
+        'accept': 'application/json',
+        'api-key': api_key,
+        'content-type': 'application/json',
+    }
 
     try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
-            if use_tls:
-                server.starttls()
-            if smtp_user:
-                server.login(smtp_user, smtp_password)
-            server.send_message(message)
-        return {'success': True}
-    except Exception as e:
+        response = requests.post(BREVO_API_URL, json=payload, headers=headers, timeout=20)
+        if response.status_code in (200, 201):
+            return {'success': True}
+
+        try:
+            error_detail = response.json().get('message', response.text)
+        except Exception:
+            error_detail = response.text
+
+        return {
+            'success': False,
+            'error': f'Failed to send OTP email (Brevo {response.status_code}): {error_detail}',
+        }
+    except requests.exceptions.RequestException as e:
         return {'success': False, 'error': f'Failed to send OTP email: {e}'}
 
 
