@@ -10,9 +10,9 @@ def _bool_env(name, default=False):
     return value in {'1', 'true', 'yes', 'on'}
 
 
-def send_unlock_otp_email(recipient_email, otp_code, expires_at=None):
+def _send_otp_email(recipient_email, otp_code, expires_at=None, purpose='unlock'):
     """
-    Sends account unlock OTP to recipient using SMTP.
+    Shared SMTP sender for both unlock-account OTPs and login-MFA OTPs.
     Required env vars:
       SMTP_HOST, SMTP_PORT, SMTP_FROM_EMAIL
     Optional:
@@ -43,17 +43,19 @@ def send_unlock_otp_email(recipient_email, otp_code, expires_at=None):
     if not recipient:
         return {'success': False, 'error': 'Recipient email is required.'}
 
-    subject = 'GeniusTalk Account Unlock OTP'
-    body_lines = [
-        'We received a request to unlock your GeniusTalk account.',
-        '',
-        f'Your OTP code is: {otp_code}',
-    ]
+    if purpose == 'login':
+        subject = 'GeniusTalk Login Verification Code'
+        intro = 'A login to your GeniusTalk account requires verification.'
+    else:
+        subject = 'GeniusTalk Account Unlock OTP'
+        intro = 'We received a request to unlock your GeniusTalk account.'
+
+    body_lines = [intro, '', f'Your verification code is: {otp_code}']
     if expires_at:
         body_lines.append(f'This code expires at: {expires_at}')
     body_lines.extend([
         '',
-        'If you did not request this, please ignore this email.',
+        'If this was not you, please ignore this email and consider changing your password.',
     ])
 
     message = EmailMessage()
@@ -72,3 +74,11 @@ def send_unlock_otp_email(recipient_email, otp_code, expires_at=None):
         return {'success': True}
     except Exception as e:
         return {'success': False, 'error': f'Failed to send OTP email: {e}'}
+
+
+def send_unlock_otp_email(recipient_email, otp_code, expires_at=None):
+    return _send_otp_email(recipient_email, otp_code, expires_at, purpose='unlock')
+
+
+def send_login_otp_email(recipient_email, otp_code, expires_at=None):
+    return _send_otp_email(recipient_email, otp_code, expires_at, purpose='login')

@@ -1,7 +1,5 @@
 # utils/db_logger.py
 # Firebase Firestore Database Logger (REST API version)
-# No SDK needed — works everywhere
-# Replaces SQLite completely
 
 import os
 import json
@@ -570,7 +568,69 @@ def record_failed_login_attempt(email):
         print(f"record_failed_login_attempt error: {e}")
         return get_login_security_state(email)
 
+def create_login_otp(email):
+    """Creates a one-time code for post-login MFA verification."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {'success': False, 'error': 'Email is required'}
 
+        otp_code = ''.join(str(random.randint(0, 9)) for _ in range(6))
+        doc_id = _email_key(normalized)
+        expires_at = _now_utc() + timedelta(minutes=OTP_TTL_MINUTES)
+
+        set_document('login_mfa_otps', doc_id, {
+            'email': normalized,
+            'otp_code': otp_code,
+            'expires_at': expires_at.isoformat(),
+            'verified': False,
+            'created_at': _now_utc().isoformat(),
+        })
+
+        return {
+            'success': True,
+            'email': normalized,
+            'otp_code': otp_code,
+            'expires_at': expires_at.isoformat(),
+        }
+    except Exception as e:
+        print(f"create_login_otp error: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def verify_login_otp(email, otp_code):
+    """Validates the post-login MFA OTP."""
+    try:
+        normalized = (email or '').strip().lower()
+        provided = (otp_code or '').strip()
+        if not normalized or not provided:
+            return {'success': False, 'error': 'Email and OTP are required'}
+
+        doc_id = _email_key(normalized)
+        otp_doc = get_document('login_mfa_otps', doc_id) or {}
+
+        stored = str(otp_doc.get('otp_code', ''))
+        expires_at = _parse_datetime(otp_doc.get('expires_at'))
+        verified = otp_doc.get('verified', False)
+
+        if not stored:
+            return {'success': False, 'error': 'No OTP requested'}
+        if verified:
+            return {'success': False, 'error': 'OTP already used'}
+        if not expires_at or _now_utc() > expires_at:
+            return {'success': False, 'error': 'OTP expired'}
+        if stored != provided:
+            return {'success': False, 'error': 'Invalid OTP'}
+
+        update_document('login_mfa_otps', doc_id, {
+            'verified': True,
+            'verified_at': _now_utc().isoformat(),
+        })
+        return {'success': True, 'email': normalized}
+    except Exception as e:
+        print(f"verify_login_otp error: {e}")
+        return {'success': False, 'error': str(e)}
+    
 def create_unlock_otp(email):
     """Creates a one-time code to unlock a temporarily locked account."""
     try:

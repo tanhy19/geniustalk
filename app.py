@@ -60,12 +60,14 @@ from utils.db_logger      import (
     log_security_event,
     get_security_activity,
     get_recent_suspicious_activity,
+    create_login_otp,
+    verify_login_otp,
 )
 
 from utils.keyword_engine import keyword_scan
 from utils.qr_scanner     import scan_qr, analyze_qr_content
 from utils.link_verifier  import verify_links
-from utils.email_sender   import send_unlock_otp_email
+from utils.email_sender import send_unlock_otp_email, send_login_otp_email
 from utils.firebase_config import FirebaseConfig
 
 app = Flask(__name__)
@@ -575,6 +577,74 @@ def auth_login_status_endpoint():
         'minutes_until_unlock': state.get('minutes_until_unlock', 0),
     })
 
+@app.route('/auth/mfa/request-otp', methods=['POST'])
+def auth_mfa_request_otp_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return make_response(False, error='Missing email', status_code=400)
+
+    otp_result = create_login_otp(email)
+    if not otp_result.get('success'):
+        return make_response(False, error=otp_result.get('error', 'Failed to create OTP'), status_code=500)
+
+    email_result = send_login_otp_email(
+        recipient_email=email,
+        otp_code=otp_result.get('otp_code', ''),
+        expires_at=otp_result.get('expires_at'),
+    )
+    if not email_result.get('success'):
+        return make_response(
+            False,
+            error=email_result.get('error', 'Failed to send OTP email'),
+            status_code=500,
+        )
+
+    ip_address = _client_ip(request)
+    log_security_event(
+        event_type='mfa_otp_requested',
+        status='info',
+        email=email,
+        role='user',
+        ip_address=ip_address,
+        location=_approx_location(ip_address),
+        details='Login MFA OTP requested',
+    )
+
+    return make_response(True, {
+        'email': email,
+        'expires_at': otp_result.get('expires_at'),
+        'message': 'Verification code sent to your email address.',
+    })
+
+
+@app.route('/auth/mfa/verify-otp', methods=['POST'])
+def auth_mfa_verify_otp_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    otp_code = (data.get('otp_code') or '').strip()
+    if not email or not otp_code:
+        return make_response(False, error='Missing email or otp_code', status_code=400)
+
+    result = verify_login_otp(email, otp_code)
+    if not result.get('success'):
+        return make_response(False, error=result.get('error', 'OTP verification failed'), status_code=400)
+
+    ip_address = _client_ip(request)
+    log_security_event(
+        event_type='mfa_otp_verified',
+        status='success',
+        email=email,
+        role='user',
+        ip_address=ip_address,
+        location=_approx_location(ip_address),
+        details='Login MFA OTP verified',
+    )
+
+    return make_response(True, {
+        'email': email,
+        'message': 'Verification successful.',
+    })
 
 @app.route('/auth/login-attempt', methods=['POST'])
 def auth_login_attempt_endpoint():
