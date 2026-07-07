@@ -55,19 +55,19 @@ from utils.db_logger      import (
     get_login_security_state,
     record_failed_login_attempt,
     reset_failed_login_attempts,
-    create_unlock_otp,
-    verify_unlock_otp,
     log_security_event,
     get_security_activity,
     get_recent_suspicious_activity,
-    create_login_otp,
-    verify_login_otp,
+    get_locked_accounts,
+    admin_unlock_account,
+    set_security_answer,
+    verify_security_answer,
+    
 )
 
 from utils.keyword_engine import keyword_scan
 from utils.qr_scanner     import scan_qr, analyze_qr_content
 from utils.link_verifier  import verify_links
-from utils.email_sender import send_unlock_otp_email, send_login_otp_email
 from utils.firebase_config import FirebaseConfig
 
 app = Flask(__name__)
@@ -571,80 +571,15 @@ def auth_login_status_endpoint():
     return make_response(True, {
         'email': state.get('email'),
         'is_locked': state.get('is_locked', False),
+        'is_permanently_locked': state.get('is_permanently_locked', False),
+        'requires_admin_unlock': state.get('requires_admin_unlock', False),
         'failed_attempts': state.get('failed_attempts', 0),
-        'attempts_left': state.get('attempts_left', 5),
+        'attempts_left': state.get('attempts_left', 3),
         'lock_until': state.get('lock_until'),
         'minutes_until_unlock': state.get('minutes_until_unlock', 0),
     })
 
-@app.route('/auth/mfa/request-otp', methods=['POST'])
-def auth_mfa_request_otp_endpoint():
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip().lower()
-    if not email:
-        return make_response(False, error='Missing email', status_code=400)
 
-    otp_result = create_login_otp(email)
-    if not otp_result.get('success'):
-        return make_response(False, error=otp_result.get('error', 'Failed to create OTP'), status_code=500)
-
-    email_result = send_login_otp_email(
-        recipient_email=email,
-        otp_code=otp_result.get('otp_code', ''),
-        expires_at=otp_result.get('expires_at'),
-    )
-    if not email_result.get('success'):
-        return make_response(
-            False,
-            error=email_result.get('error', 'Failed to send OTP email'),
-            status_code=500,
-        )
-
-    ip_address = _client_ip(request)
-    log_security_event(
-        event_type='mfa_otp_requested',
-        status='info',
-        email=email,
-        role='user',
-        ip_address=ip_address,
-        location=_approx_location(ip_address),
-        details='Login MFA OTP requested',
-    )
-
-    return make_response(True, {
-        'email': email,
-        'expires_at': otp_result.get('expires_at'),
-        'message': 'Verification code sent to your email address.',
-    })
-
-
-@app.route('/auth/mfa/verify-otp', methods=['POST'])
-def auth_mfa_verify_otp_endpoint():
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip().lower()
-    otp_code = (data.get('otp_code') or '').strip()
-    if not email or not otp_code:
-        return make_response(False, error='Missing email or otp_code', status_code=400)
-
-    result = verify_login_otp(email, otp_code)
-    if not result.get('success'):
-        return make_response(False, error=result.get('error', 'OTP verification failed'), status_code=400)
-
-    ip_address = _client_ip(request)
-    log_security_event(
-        event_type='mfa_otp_verified',
-        status='success',
-        email=email,
-        role='user',
-        ip_address=ip_address,
-        location=_approx_location(ip_address),
-        details='Login MFA OTP verified',
-    )
-
-    return make_response(True, {
-        'email': email,
-        'message': 'Verification successful.',
-    })
 
 @app.route('/auth/login-attempt', methods=['POST'])
 def auth_login_attempt_endpoint():
@@ -764,95 +699,47 @@ def auth_login_attempt_endpoint():
         ),
     })
 
-
-@app.route('/auth/unlock/request-otp', methods=['POST'])
-def auth_request_unlock_otp_endpoint():
+@app.route('/auth/security-question/set', methods=['POST'])
+def auth_security_question_set_endpoint():
+    """Called once at registration to store the user's security answer."""
     data = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
-    if not email:
-        return make_response(False, error='Missing email', status_code=400)
+    answer = (data.get('answer') or '').strip()
+    if not email or not answer:
+        return make_response(False, error='Missing email or answer', status_code=400)
 
-    state = get_login_security_state(email)
-    if not state.get('is_locked', False):
-        return make_response(True, {
-            'email': email,
-            'is_locked': False,
-            'message': 'Account is not locked.',
-        })
-
-    otp_result = create_unlock_otp(email)
-    if not otp_result.get('success'):
-        return make_response(False, error=otp_result.get('error', 'Failed to create OTP'), status_code=500)
-
-    email_result = send_unlock_otp_email(
-        recipient_email=email,
-        otp_code=otp_result.get('otp_code', ''),
-        expires_at=otp_result.get('expires_at'),
-    )
-    if not email_result.get('success'):
-        return make_response(
-            False,
-            error=email_result.get('error', 'Failed to send OTP email'),
-            status_code=500,
-        )
-
-    ip_address = _client_ip(request)
-    log_security_event(
-        event_type='unlock_otp_requested',
-        status='info',
-        email=email,
-        role='user',
-        ip_address=ip_address,
-        location=_approx_location(ip_address),
-        details='Unlock OTP requested',
-    )
-
-    return make_response(True, {
-        'email': email,
-        'is_locked': True,
-        'expires_at': otp_result.get('expires_at'),
-        'message': 'Unlock OTP sent to your email address.',
-    })
-
-
-@app.route('/auth/unlock/verify-otp', methods=['POST'])
-def auth_verify_unlock_otp_endpoint():
-    data = request.get_json() or {}
-    email = (data.get('email') or '').strip().lower()
-    otp_code = (data.get('otp_code') or '').strip()
-    if not email or not otp_code:
-        return make_response(False, error='Missing email or otp_code', status_code=400)
-
-    result = verify_unlock_otp(email, otp_code)
+    result = set_security_answer(email, answer)
     if not result.get('success'):
-        return make_response(False, error=result.get('error', 'OTP verification failed'), status_code=400)
+        return make_response(False, error=result.get('error', 'Failed to save security answer'), status_code=500)
+
+    return make_response(True, {'email': email, 'message': 'Security answer saved.'})
+
+
+@app.route('/auth/security-question/verify', methods=['POST'])
+def auth_security_question_verify_endpoint():
+    """Called after correct email+password, as the MFA step."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    answer = (data.get('answer') or '').strip()
+    if not email or not answer:
+        return make_response(False, error='Missing email or answer', status_code=400)
+
+    result = verify_security_answer(email, answer)
+    if not result.get('success'):
+        return make_response(False, error=result.get('error', 'Incorrect answer'), status_code=400)
 
     ip_address = _client_ip(request)
     log_security_event(
-        event_type='otp_verified',
+        event_type='mfa_security_question_verified',
         status='success',
         email=email,
         role='user',
         ip_address=ip_address,
         location=_approx_location(ip_address),
-        details='Unlock OTP verified',
-    )
-    log_security_event(
-        event_type='account_unlocked',
-        status='success',
-        email=email,
-        role='user',
-        ip_address=ip_address,
-        location=_approx_location(ip_address),
-        details='Account unlocked via OTP',
+        details='Login MFA security question verified',
     )
 
-    return make_response(True, {
-        'email': email,
-        'is_locked': False,
-        'message': 'Account unlocked successfully.',
-    })
-
+    return make_response(True, {'email': email, 'message': 'Verification successful.'})
 
 @app.route('/security/event', methods=['POST'])
 def security_event_endpoint():
@@ -1133,6 +1020,35 @@ def update_report_status_endpoint():
     except Exception as e:
         return make_response(False, error=str(e), status_code=500)
 
+@app.route('/admin/locked-accounts', methods=['GET'])
+def admin_locked_accounts_endpoint():
+    return make_response(True, get_locked_accounts())
+
+
+@app.route('/admin/unlock-account', methods=['POST'])
+def admin_unlock_account_endpoint():
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    unlocked_by = data.get('unlocked_by', 'admin')
+    if not email:
+        return make_response(False, error='Missing email', status_code=400)
+
+    result = admin_unlock_account(email, unlocked_by=unlocked_by)
+    if not result.get('success'):
+        return make_response(False, error=result.get('error', 'Failed to unlock account'), status_code=500)
+
+    ip_address = _client_ip(request)
+    log_security_event(
+        event_type='account_unlocked_by_admin',
+        status='success',
+        email=email,
+        role='user',
+        ip_address=ip_address,
+        location=_approx_location(ip_address),
+        details=f'Account unlocked by {unlocked_by}',
+    )
+
+    return make_response(True, {'email': email, 'message': 'Account unlocked successfully.'})
 
 # ─────────────────────────────────────────
 # AWARENESS & EDUCATION ENDPOINTS

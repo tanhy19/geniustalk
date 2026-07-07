@@ -18,7 +18,7 @@ from utils.firebase_config import (
 
 FAILED_LOGIN_LIMIT = 5
 LOCKOUT_MINUTES = 15
-OTP_TTL_MINUTES = 10
+SECURITY_QUESTION = "What is the name of your first pet?"
 
 
 def _now_utc():
@@ -454,9 +454,12 @@ def is_device_banned(device_id):
 # ─────────────────────────────────────────
 # AUTH SECURITY (FAILED LOGIN PROTECTION)
 # ─────────────────────────────────────────
-
 def get_login_security_state(email):
-    """Returns lockout state for an email and auto-unlocks expired locks."""
+    """
+    Returns lockout state for an email.
+    - 1st lockout: auto-unlocks after LOCKOUT_MINUTES.
+    - 2nd lockout: permanent — is_permanently_locked=True, requires admin unlock.
+    """
     try:
         normalized = (email or '').strip().lower()
         if not normalized:
@@ -465,19 +468,24 @@ def get_login_security_state(email):
                 'failed_attempts': 0,
                 'attempts_left': FAILED_LOGIN_LIMIT,
                 'is_locked': False,
+                'is_permanently_locked': False,
                 'lock_until': None,
                 'minutes_until_unlock': 0,
+                'requires_admin_unlock': False,
             }
 
         doc_id = _email_key(normalized)
         state = get_document('login_protection', doc_id) or {}
 
         failed_attempts = int(state.get('failed_attempts', 0) or 0)
+        lockout_count = int(state.get('lockout_count', 0) or 0)
+        is_permanently_locked = bool(state.get('is_permanently_locked', False))
         lock_until_raw = state.get('lock_until')
         lock_until = _parse_datetime(lock_until_raw)
         is_locked = bool(state.get('is_locked', False))
 
-        if is_locked and lock_until and _now_utc() >= lock_until:
+        # Auto-unlock only applies to the FIRST (temporary) lockout.
+        if is_locked and not is_permanently_locked and lock_until and _now_utc() >= lock_until:
             is_locked = False
             failed_attempts = 0
             lock_until = None
@@ -488,16 +496,18 @@ def get_login_security_state(email):
                 'updated_at': _now_utc().isoformat(),
             })
 
-        minutes_until_unlock = _minutes_left(lock_until)
+        minutes_until_unlock = _minutes_left(lock_until) if not is_permanently_locked else 0
         attempts_left = max(FAILED_LOGIN_LIMIT - failed_attempts, 0)
 
         return {
             'email': normalized,
             'failed_attempts': failed_attempts,
             'attempts_left': attempts_left,
-            'is_locked': is_locked,
+            'is_locked': is_locked or is_permanently_locked,
+            'is_permanently_locked': is_permanently_locked,
             'lock_until': lock_until.isoformat() if lock_until else None,
             'minutes_until_unlock': minutes_until_unlock,
+            'requires_admin_unlock': is_permanently_locked,
         }
     except Exception as e:
         print(f"get_login_security_state error: {e}")
@@ -506,23 +516,28 @@ def get_login_security_state(email):
             'failed_attempts': 0,
             'attempts_left': FAILED_LOGIN_LIMIT,
             'is_locked': False,
+            'is_permanently_locked': False,
             'lock_until': None,
             'minutes_until_unlock': 0,
+            'requires_admin_unlock': False,
         }
 
 
 def reset_failed_login_attempts(email):
-    """Clears failed login attempts and unlocks an account."""
+    """Clears failed login attempts and unlocks an account (does NOT clear lockout_count)."""
     try:
         normalized = (email or '').strip().lower()
         if not normalized:
             return False
         doc_id = _email_key(normalized)
+        existing = get_document('login_protection', doc_id) or {}
         return set_document('login_protection', doc_id, {
             'email': normalized,
             'failed_attempts': 0,
             'is_locked': False,
             'lock_until': None,
+            'lockout_count': existing.get('lockout_count', 0),
+            'is_permanently_locked': existing.get('is_permanently_locked', False),
             'updated_at': _now_utc().isoformat(),
         })
     except Exception as e:
@@ -531,7 +546,11 @@ def reset_failed_login_attempts(email):
 
 
 def record_failed_login_attempt(email):
-    """Increments failed attempts and locks account after threshold."""
+    """
+    Increments failed attempts. On hitting FAILED_LOGIN_LIMIT:
+      - 1st time  -> temporary lock, auto-unlocks after LOCKOUT_MINUTES
+      - 2nd+ time -> permanent lock, requires admin unlock
+    """
     try:
         normalized = (email or '').strip().lower()
         if not normalized:
@@ -543,14 +562,31 @@ def record_failed_login_attempt(email):
         if state.get('is_locked'):
             return state
 
+        existing_doc = get_document('login_protection', doc_id) or {}
+        lockout_count = int(existing_doc.get('lockout_count', 0) or 0)
+
         failed_attempts = int(state.get('failed_attempts', 0) or 0) + 1
-        is_locked = failed_attempts >= FAILED_LOGIN_LIMIT
-        lock_until = (_now_utc() + timedelta(minutes=LOCKOUT_MINUTES)) if is_locked else None
+        hit_limit = failed_attempts >= FAILED_LOGIN_LIMIT
+
+        is_locked = False
+        is_permanently_locked = False
+        lock_until = None
+
+        if hit_limit:
+            lockout_count += 1
+            if lockout_count >= 2:
+                is_permanently_locked = True
+                is_locked = True
+            else:
+                is_locked = True
+                lock_until = _now_utc() + timedelta(minutes=LOCKOUT_MINUTES)
 
         set_document('login_protection', doc_id, {
             'email': normalized,
             'failed_attempts': failed_attempts,
             'is_locked': is_locked,
+            'is_permanently_locked': is_permanently_locked,
+            'lockout_count': lockout_count,
             'lock_until': lock_until.isoformat() if lock_until else None,
             'last_failed_at': _now_utc().isoformat(),
             'updated_at': _now_utc().isoformat(),
@@ -561,140 +597,106 @@ def record_failed_login_attempt(email):
             'failed_attempts': failed_attempts,
             'attempts_left': max(FAILED_LOGIN_LIMIT - failed_attempts, 0),
             'is_locked': is_locked,
+            'is_permanently_locked': is_permanently_locked,
             'lock_until': lock_until.isoformat() if lock_until else None,
-            'minutes_until_unlock': LOCKOUT_MINUTES if is_locked else 0,
+            'minutes_until_unlock': LOCKOUT_MINUTES if (is_locked and not is_permanently_locked) else 0,
+            'requires_admin_unlock': is_permanently_locked,
         }
     except Exception as e:
         print(f"record_failed_login_attempt error: {e}")
         return get_login_security_state(email)
 
-def create_login_otp(email):
-    """Creates a one-time code for post-login MFA verification."""
+
+def get_locked_accounts(limit=50):
+    """Returns accounts that are permanently locked and need admin unlock."""
+    try:
+        docs = query_collection(
+            'login_protection',
+            filters=[('is_permanently_locked', 'EQUAL', True)],
+            limit=limit,
+        )
+        return docs
+    except Exception as e:
+        print(f"get_locked_accounts error: {e}")
+        return []
+
+
+def admin_unlock_account(email, unlocked_by='admin'):
+    """Admin fully resets an account's lockout state (temporary or permanent)."""
     try:
         normalized = (email or '').strip().lower()
         if not normalized:
             return {'success': False, 'error': 'Email is required'}
-
-        otp_code = ''.join(str(random.randint(0, 9)) for _ in range(6))
         doc_id = _email_key(normalized)
-        expires_at = _now_utc() + timedelta(minutes=OTP_TTL_MINUTES)
-
-        set_document('login_mfa_otps', doc_id, {
+        set_document('login_protection', doc_id, {
             'email': normalized,
-            'otp_code': otp_code,
-            'expires_at': expires_at.isoformat(),
-            'verified': False,
-            'created_at': _now_utc().isoformat(),
+            'failed_attempts': 0,
+            'is_locked': False,
+            'is_permanently_locked': False,
+            'lockout_count': 0,
+            'lock_until': None,
+            'updated_at': _now_utc().isoformat(),
         })
-
-        return {
-            'success': True,
-            'email': normalized,
-            'otp_code': otp_code,
-            'expires_at': expires_at.isoformat(),
-        }
+        log_admin_action('unlock_account', unlocked_by, target=normalized,
+                          details='Account lockout manually cleared by admin')
+        return {'success': True, 'email': normalized}
     except Exception as e:
-        print(f"create_login_otp error: {e}")
+        print(f"admin_unlock_account error: {e}")
         return {'success': False, 'error': str(e)}
 
 
-def verify_login_otp(email, otp_code):
-    """Validates the post-login MFA OTP."""
+# ─────────────────────────────────────────
+# SECURITY QUESTION (replaces email OTP for MFA + unlock)
+# ─────────────────────────────────────────
+
+def _answer_hash(answer):
+    normalized = (answer or '').strip().lower()
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def set_security_answer(email, answer):
+    """Stores a hashed security-question answer for a user, set at registration."""
     try:
         normalized = (email or '').strip().lower()
-        provided = (otp_code or '').strip()
-        if not normalized or not provided:
-            return {'success': False, 'error': 'Email and OTP are required'}
+        clean_answer = (answer or '').strip()
+        if not normalized or not clean_answer:
+            return {'success': False, 'error': 'Email and answer are required'}
 
         doc_id = _email_key(normalized)
-        otp_doc = get_document('login_mfa_otps', doc_id) or {}
-
-        stored = str(otp_doc.get('otp_code', ''))
-        expires_at = _parse_datetime(otp_doc.get('expires_at'))
-        verified = otp_doc.get('verified', False)
-
-        if not stored:
-            return {'success': False, 'error': 'No OTP requested'}
-        if verified:
-            return {'success': False, 'error': 'OTP already used'}
-        if not expires_at or _now_utc() > expires_at:
-            return {'success': False, 'error': 'OTP expired'}
-        if stored != provided:
-            return {'success': False, 'error': 'Invalid OTP'}
-
-        update_document('login_mfa_otps', doc_id, {
-            'verified': True,
-            'verified_at': _now_utc().isoformat(),
+        set_document('security_answers', doc_id, {
+            'email': normalized,
+            'answer_hash': _answer_hash(clean_answer),
+            'question': SECURITY_QUESTION,
+            'updated_at': _now_utc().isoformat(),
         })
         return {'success': True, 'email': normalized}
     except Exception as e:
-        print(f"verify_login_otp error: {e}")
-        return {'success': False, 'error': str(e)}
-    
-def create_unlock_otp(email):
-    """Creates a one-time code to unlock a temporarily locked account."""
-    try:
-        normalized = (email or '').strip().lower()
-        if not normalized:
-            return {'success': False, 'error': 'Email is required'}
-
-        otp_code = ''.join(str(random.randint(0, 9)) for _ in range(6))
-        doc_id = _email_key(normalized)
-        expires_at = _now_utc() + timedelta(minutes=OTP_TTL_MINUTES)
-
-        set_document('unlock_otps', doc_id, {
-            'email': normalized,
-            'otp_code': otp_code,
-            'expires_at': expires_at.isoformat(),
-            'verified': False,
-            'created_at': _now_utc().isoformat(),
-        })
-
-        return {
-            'success': True,
-            'email': normalized,
-            'otp_code': otp_code,
-            'expires_at': expires_at.isoformat(),
-        }
-    except Exception as e:
-        print(f"create_unlock_otp error: {e}")
+        print(f"set_security_answer error: {e}")
         return {'success': False, 'error': str(e)}
 
 
-def verify_unlock_otp(email, otp_code):
-    """Validates OTP and unlocks account if it matches and is not expired."""
+def verify_security_answer(email, answer):
+    """Validates a security-question answer against the stored hash."""
     try:
         normalized = (email or '').strip().lower()
-        provided = (otp_code or '').strip()
+        provided = (answer or '').strip()
         if not normalized or not provided:
-            return {'success': False, 'error': 'Email and OTP are required'}
+            return {'success': False, 'error': 'Email and answer are required'}
 
         doc_id = _email_key(normalized)
-        otp_doc = get_document('unlock_otps', doc_id) or {}
+        doc = get_document('security_answers', doc_id) or {}
+        stored_hash = doc.get('answer_hash')
 
-        stored = str(otp_doc.get('otp_code', ''))
-        expires_at = _parse_datetime(otp_doc.get('expires_at'))
-        verified = otp_doc.get('verified', False)
+        if not stored_hash:
+            return {'success': False, 'error': 'No security answer set for this account'}
 
-        if not stored:
-            return {'success': False, 'error': 'No OTP requested'}
-        if verified:
-            return {'success': False, 'error': 'OTP already used'}
-        if not expires_at or _now_utc() > expires_at:
-            return {'success': False, 'error': 'OTP expired'}
-        if stored != provided:
-            return {'success': False, 'error': 'Invalid OTP'}
+        if _answer_hash(provided) != stored_hash:
+            return {'success': False, 'error': 'Incorrect answer'}
 
-        update_document('unlock_otps', doc_id, {
-            'verified': True,
-            'verified_at': _now_utc().isoformat(),
-        })
-        reset_failed_login_attempts(normalized)
         return {'success': True, 'email': normalized}
     except Exception as e:
-        print(f"verify_unlock_otp error: {e}")
+        print(f"verify_security_answer error: {e}")
         return {'success': False, 'error': str(e)}
-
 
 # ─────────────────────────────────────────
 # SECURITY ACTIVITY LOG
