@@ -62,7 +62,10 @@ from utils.db_logger      import (
     admin_unlock_account,
     set_security_answer,
     verify_security_answer,
-    
+    submit_security_answer_reset_request,
+    get_security_answer_reset_state,
+    get_pending_security_answer_reset_requests,
+    approve_security_answer_reset_request,
 )
 
 from utils.keyword_engine import keyword_scan
@@ -618,17 +621,11 @@ def auth_login_attempt_endpoint():
             suspicious_reason=suspicious_reason,
         )
 
-        if is_new_device:
-            create_security_alert(
-                title='Suspicious login detected',
-                message=f'New device login for {email}',
-                severity='high',
-                created_by='system',
-                audience='private',
-                target_user_id=user_id,
-                target_email=email,
-                category='account_security',
-            )
+        # NOTE: New-device logins are recorded above via log_security_event
+        # only. They are intentionally NOT written to security_alerts,
+        # since that collection feeds the admin's public Live Alerts CRUD
+        # screen. This event is private to the user and shows up in their
+        # own Profile > Security Activity Log instead.
 
         return make_response(True, {
             'is_locked': False,
@@ -661,16 +658,11 @@ def auth_login_attempt_endpoint():
     )
 
     if is_locked:
-        create_security_alert(
-            title='Account temporarily locked',
-            message=f'Account {email} locked after 5 failed login attempts.',
-            severity='high',
-            created_by='system',
-            audience='private',
-            target_user_id=user_id,
-            target_email=email,
-            category='account_security',
-        )
+        # NOTE: Account-lockout events are recorded below via
+        # log_security_event only, and intentionally NOT written to
+        # security_alerts. This keeps them private to the affected user
+        # (visible in their own Profile > Security Activity Log) instead
+        # of leaking into the admin's public Live Alerts CRUD screen.
         log_security_event(
             event_type='account_locked',
             status='info',
@@ -740,6 +732,63 @@ def auth_security_question_verify_endpoint():
     )
 
     return make_response(True, {'email': email, 'message': 'Verification successful.'})
+
+
+@app.route('/auth/security-question/reset-request', methods=['POST'])
+def auth_security_question_reset_request_endpoint():
+    """Submits a forgot-security-answer request for admin approval."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    message = (data.get('message') or '').strip()
+    if not email:
+        return make_response(False, error='Email is required', status_code=400)
+
+    result = submit_security_answer_reset_request(email, requested_by='user', message=message)
+    if not result.get('success'):
+        return make_response(False, error=result.get('error', 'Failed to submit request'), status_code=500)
+
+    return make_response(True, {
+        'email': email,
+        'status': result.get('status', 'pending'),
+        'message': 'The reset security answer request has been submitted to administrator. Once approved by administrator, you will be able to create a new security answer.',
+    })
+
+
+@app.route('/auth/security-question/reset-status', methods=['GET'])
+def auth_security_question_reset_status_endpoint():
+    """Returns whether a reset request for the given user has been approved."""
+    email = (request.args.get('email') or '').strip().lower()
+    if not email:
+        return make_response(False, error='Email is required', status_code=400)
+
+    result = get_security_answer_reset_state(email)
+    return make_response(True, result)
+
+
+@app.route('/admin/security-answer-reset/requests', methods=['GET'])
+def admin_security_answer_reset_requests_endpoint():
+    """Lists pending security-answer reset requests for admins."""
+    return make_response(True, get_pending_security_answer_reset_requests())
+
+
+@app.route('/admin/security-answer-reset/approve', methods=['POST'])
+def admin_security_answer_reset_approve_endpoint():
+    """Approves a pending security-answer reset request."""
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    approved_by = (data.get('approved_by') or 'admin').strip() or 'admin'
+    if not email:
+        return make_response(False, error='Email is required', status_code=400)
+
+    result = approve_security_answer_reset_request(email, approved_by=approved_by)
+    if not result.get('success'):
+        return make_response(False, error=result.get('error', 'Failed to approve request'), status_code=500)
+
+    return make_response(True, {
+        'email': email,
+        'status': result.get('status', 'approved'),
+        'message': 'Security answer reset request approved.',
+    })
 
 @app.route('/security/event', methods=['POST'])
 def security_event_endpoint():
@@ -1077,7 +1126,10 @@ def create_alert():
 
 @app.route('/awareness/alerts', methods=['GET'])
 def get_alerts():
-    audience = (request.args.get('audience') or '').strip().lower() or None
+    # Default to 'public' so admin-facing calls that omit the audience
+    # param (e.g. the Live Alerts CRUD screen) never see private,
+    # system-generated per-user security events.
+    audience = (request.args.get('audience') or 'public').strip().lower()
     user_id = (request.args.get('user_id') or '').strip() or None
     email = (request.args.get('email') or '').strip().lower() or None
     category = (request.args.get('category') or '').strip().lower() or None

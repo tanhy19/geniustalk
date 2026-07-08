@@ -10,6 +10,7 @@ from utils.firebase_config import (
     add_document,
     set_document,
     get_document,
+    get_collection,
     update_document,
     query_collection,
     increment_field
@@ -672,6 +673,88 @@ def set_security_answer(email, answer):
         return {'success': True, 'email': normalized}
     except Exception as e:
         print(f"set_security_answer error: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def submit_security_answer_reset_request(email, requested_by='user', message=''):
+    """Creates a pending security-answer reset request for admin review."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {'success': False, 'error': 'Email is required'}
+
+        doc_id = _email_key(normalized)
+        payload = {
+            'email': normalized,
+            'status': 'pending',
+            'requested_by': (requested_by or 'user').strip() or 'user',
+            'message': (message or '').strip(),
+            'requested_at': _now_utc().isoformat(),
+            'updated_at': _now_utc().isoformat(),
+        }
+        set_document('security_answer_reset_requests', doc_id, payload)
+        return {'success': True, 'email': normalized, 'status': 'pending'}
+    except Exception as e:
+        print(f"submit_security_answer_reset_request error: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def get_security_answer_reset_state(email):
+    """Returns the current status of a security-answer reset request."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {'exists': False, 'status': None, 'is_approved': False}
+
+        doc_id = _email_key(normalized)
+        doc = get_document('security_answer_reset_requests', doc_id) or {}
+        status = (doc.get('status') or '').strip().lower()
+        return {
+            'exists': bool(doc),
+            'email': normalized,
+            'status': status,
+            'is_approved': status == 'approved',
+            'requested_by': doc.get('requested_by') or 'user',
+            'message': doc.get('message') or '',
+        }
+    except Exception as e:
+        print(f"get_security_answer_reset_state error: {e}")
+        return {'exists': False, 'status': None, 'is_approved': False}
+
+
+def get_pending_security_answer_reset_requests():
+    """Returns all pending security-answer reset requests for admin review."""
+    try:
+        docs = get_collection('security_answer_reset_requests') or []
+        pending = [
+            row for row in docs
+            if (row.get('status') or '').strip().lower() == 'pending'
+        ]
+        return pending
+    except Exception as e:
+        print(f"get_pending_security_answer_reset_requests error: {e}")
+        return []
+
+
+def approve_security_answer_reset_request(email, approved_by='admin'):
+    """Approves a pending security-answer reset request."""
+    try:
+        normalized = (email or '').strip().lower()
+        if not normalized:
+            return {'success': False, 'error': 'Email is required'}
+
+        doc_id = _email_key(normalized)
+        payload = {
+            'email': normalized,
+            'status': 'approved',
+            'approved_by': (approved_by or 'admin').strip() or 'admin',
+            'approved_at': _now_utc().isoformat(),
+            'updated_at': _now_utc().isoformat(),
+        }
+        set_document('security_answer_reset_requests', doc_id, payload)
+        return {'success': True, 'email': normalized, 'status': 'approved'}
+    except Exception as e:
+        print(f"approve_security_answer_reset_request error: {e}")
         return {'success': False, 'error': str(e)}
 
 

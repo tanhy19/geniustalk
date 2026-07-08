@@ -72,29 +72,29 @@ def calculate_extension_score(extension):
     """Return a base risk score based on file extension."""
     ext = extension.lower()
     if ext in HIGH_RISK_EXTENSIONS:
-        return 90  # Very dangerous
+        return 100  # Very dangerous
     elif ext in MEDIUM_RISK_EXTENSIONS:
-        return 50  # Moderate risk
+        return 60  # Moderate risk
     elif ext in LOW_RISK_EXTENSIONS:
-        return 10  # Generally safe
+        return 20  # Generally safe
     else:
-        return 60  # Unknown extension = treat as suspicious
+        return 25  # Unknown extension = treat as mildly suspicious
 
 
 def calculate_mime_score(mime_type):
     """Return a risk score based on detected MIME type."""
     if mime_type in DANGEROUS_MIME_TYPES:
-        return 95  # Confirmed dangerous MIME
+        return 100  # Confirmed dangerous MIME
     elif 'executable' in mime_type or 'script' in mime_type:
-        return 85
+        return 90
     elif 'zip' in mime_type or 'compressed' in mime_type:
-        return 45
+        return 60
     elif 'pdf' in mime_type or 'office' in mime_type:
-        return 40
+        return 45
     elif mime_type.startswith('image/') or mime_type.startswith('audio/') or mime_type.startswith('video/'):
-        return 10  # Media files are generally safe
+        return 15  # Media files are generally safe
     else:
-        return 55  # Unknown MIME = slightly suspicious
+        return 25  # Unknown MIME = mildly suspicious
 
 
 # ─────────────────────────────────────────
@@ -178,17 +178,22 @@ def inspect_file(file_path):
     # Weight: MIME type is more reliable than extension (60/40 split)
     combined_score = int((mime_score * 0.6) + (ext_score * 0.4))
 
+    # High-risk extensions and confirmed dangerous MIME types must be treated as high risk
+    if ext.lower() in HIGH_RISK_EXTENSIONS or mime_type in DANGEROUS_MIME_TYPES:
+        combined_score = 100
+
     # Mismatch adds a heavy penalty — this is a strong red flag
     if mismatch:
         combined_score = min(100, combined_score + 30)
 
-    # ── Determine block decision ──
-    # Block if HIGH risk OR if MIME type is confirmed dangerous
-    is_blocked = (
+    # ── Determine safety decision ──
+    # Uploads are allowed for all files; download/opening is blocked only for HIGH-risk files.
+    download_blocked = (
         combined_score >= 70 or
         mime_type in DANGEROUS_MIME_TYPES or
         ext.lower() in HIGH_RISK_EXTENSIONS
     )
+    is_blocked = False
 
     # ── Build reason message ──
     reasons = []
@@ -208,15 +213,18 @@ def inspect_file(file_path):
 
     # ── Final report ──
     report = {
-        "file_name"   : file_name,
-        "file_size_kb": round(file_size, 2),
-        "extension"   : ext if ext else "none",
-        "mime_type"   : mime_type,
-        "mismatch"    : mismatch,
-        "risk_score"  : combined_score,
-        "risk_label"  : get_risk_label(combined_score),
-        "is_blocked"  : is_blocked,
-        "reason"      : " | ".join(reasons)
+        "file_name"       : file_name,
+        "file_size_kb"    : round(file_size, 2),
+        "extension"       : ext if ext else "none",
+        "mime_type"       : mime_type,
+        "mismatch"        : mismatch,
+        "risk_score"      : combined_score,
+        "risk_label"      : get_risk_label(combined_score),
+        "is_blocked"      : is_blocked,
+        "download_blocked": download_blocked,
+        "allow_download"  : not download_blocked,
+        "upload_allowed"  : True,
+        "reason"          : " | ".join(reasons)
     }
 
     return report
