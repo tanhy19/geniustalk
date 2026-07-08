@@ -830,17 +830,27 @@ def get_security_activity(
     end_iso=None,
     limit=100,
 ):
-    """Returns security activity logs with optional filters."""
+    """Returns security activity logs with optional filters.
+
+    NOTE: when looking up by a specific user_id/email (identity-based
+    lookup), the 'role' filter is intentionally NOT applied. Once you're
+    already matching an exact user's identity, an additional role
+    equality filter adds no protective value — it only risks silently
+    zeroing out valid results if role is ever recorded with a slightly
+    different value than what the caller passes in. Role filtering is
+    only meaningful for the broad "no identity given" browse case (e.g.
+    an admin listing all events for a given role).
+    """
     try:
         normalized_user_id = (user_id or '').strip()
         normalized_email = (email or '').strip().lower()
         max_limit = max(1, min(int(limit or 100), 500))
 
-        def _query(identity_filter=None):
+        def _query(identity_filter=None, include_role=True):
             filters = []
             if identity_filter is not None:
                 filters.append(identity_filter)
-            if role:
+            if include_role and role:
                 filters.append(('role', 'EQUAL', role))
             if event_type:
                 filters.append(('event_type', 'EQUAL', event_type))
@@ -854,15 +864,15 @@ def get_security_activity(
 
         logs = []
         if normalized_user_id and normalized_email:
-            logs.extend(_query(('user_id', 'EQUAL', normalized_user_id)))
-            logs.extend(_query(('email', 'EQUAL', normalized_email)))
+            logs.extend(_query(('user_id', 'EQUAL', normalized_user_id), include_role=False))
+            logs.extend(_query(('email', 'EQUAL', normalized_email), include_role=False))
             logs = _dedupe_activity_rows(logs)
         elif normalized_user_id:
-            logs = _query(('user_id', 'EQUAL', normalized_user_id))
+            logs = _query(('user_id', 'EQUAL', normalized_user_id), include_role=False)
         elif normalized_email:
-            logs = _query(('email', 'EQUAL', normalized_email))
+            logs = _query(('email', 'EQUAL', normalized_email), include_role=False)
         else:
-            logs = _query()
+            logs = _query(include_role=True)
 
         start_dt = _parse_datetime(start_iso)
         end_dt = _parse_datetime(end_iso)
@@ -1152,36 +1162,86 @@ def get_safety_tips(category=None, include_inactive=False):
         return []
 
 
-def submit_user_feedback(user_id, message,
-                         feedback_type='general', rating=None):
-    """Submits user feedback."""
+# ─────────────────────────────────────────
+# USER FEEDBACK
+# ─────────────────────────────────────────
+
+def submit_user_feedback(user_id, feedback, rating=None):
+    """Submits user feedback for admin review.
+
+    Stores the feedback under a schema matching what the Flutter side
+    expects to render: 'feedback' (message text), 'rating', 'status'
+    ('pending' | 'read' | 'replied'), and empty admin_reply/replied_at
+    placeholders that get filled in by reply_to_feedback().
+    """
     try:
-        add_document('user_feedback', {
-            'user_id'      : user_id,
-            'feedback_type': feedback_type,
-            'message'      : message,
-            'rating'       : rating,
-            'status'       : 'unread',
-            'submitted_at' : datetime.now().isoformat()
+        return add_document('user_feedback', {
+            'user_id'     : user_id or '',
+            'feedback'    : feedback,
+            'rating'      : rating,
+            'status'      : 'pending',
+            'admin_reply' : '',
+            'replied_by'  : '',
+            'replied_at'  : None,
+            'submitted_at': _now_utc().isoformat(),
         })
     except Exception as e:
         print(f"submit_user_feedback error: {e}")
+        return None
 
 
 def get_user_feedback(status=None):
-    """Returns user feedback."""
+    """Returns all user feedback (admin view), optionally filtered by status."""
     try:
         filters = []
         if status:
             filters.append(('status', 'EQUAL', status))
-        return query_collection(
+        rows = query_collection(
             'user_feedback',
             filters=filters if filters else None,
-            order_by='submitted_at'
+            order_by='submitted_at',
+            limit=200,
         )
+        rows.sort(key=lambda x: x.get('submitted_at', ''), reverse=True)
+        return rows
     except Exception as e:
         print(f"get_user_feedback error: {e}")
         return []
+
+
+def get_user_feedback_by_user(user_id):
+    """Returns feedback submissions for a single user, most recent first."""
+    try:
+        rows = query_collection(
+            'user_feedback',
+            filters=[('user_id', 'EQUAL', user_id)],
+            limit=200,
+        )
+        rows.sort(key=lambda x: x.get('submitted_at', ''), reverse=True)
+        return rows
+    except Exception as e:
+        print(f"get_user_feedback_by_user error: {e}")
+        return []
+
+
+def reply_to_feedback(feedback_id, reply, replied_by='admin'):
+    """Admin replies to a feedback submission; marks it as 'replied'."""
+    try:
+        ok = update_document('user_feedback', feedback_id, {
+            'admin_reply': reply,
+            'status': 'replied',
+            'replied_by': replied_by,
+            'replied_at': _now_utc().isoformat(),
+        })
+        if ok:
+            log_admin_action(
+                'reply_feedback', replied_by,
+                target=feedback_id, details=reply[:80]
+            )
+        return bool(ok)
+    except Exception as e:
+        print(f"reply_to_feedback error: {e}")
+        return False
 
 
 # ─────────────────────────────────────────

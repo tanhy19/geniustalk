@@ -46,6 +46,8 @@ from utils.db_logger      import (
     get_safety_tips,
     submit_user_feedback,
     get_user_feedback,
+    get_user_feedback_by_user,
+    reply_to_feedback,
     get_admin_actions,
     review_message_report,
     review_user_report,
@@ -1297,6 +1299,49 @@ def delete_tip_endpoint(tip_id):
         return make_response(False, error="Delete failed")
     except Exception as e:
         return make_response(False, error=str(e), status_code=500)
+
+
+# ─────────────────────────────────────────
+# FEEDBACK ENDPOINTS
+# ─────────────────────────────────────────
+
+@app.route('/awareness/feedback', methods=['POST'])
+def submit_feedback_endpoint():
+    data = request.get_json() or {}
+    user_id = (data.get('user_id') or '').strip()
+    feedback = (data.get('feedback') or '').strip()
+    rating = data.get('rating')
+    if not feedback:
+        return make_response(False, error="Missing 'feedback'", status_code=400)
+    doc_id = submit_user_feedback(user_id=user_id, feedback=feedback, rating=rating)
+    if not doc_id:
+        return make_response(False, error='Failed to submit feedback', status_code=500)
+    return make_response(True, {'message': 'Feedback submitted', 'id': doc_id})
+
+
+@app.route('/awareness/feedback/all', methods=['GET'])
+def get_all_feedback_endpoint():
+    status = request.args.get('status', None)
+    return make_response(True, get_user_feedback(status=status))
+
+
+@app.route('/awareness/feedback/user/<string:user_id>', methods=['GET'])
+def get_feedback_by_user_endpoint(user_id):
+    return make_response(True, get_user_feedback_by_user(user_id))
+
+
+@app.route('/awareness/feedback/reply', methods=['POST'])
+def reply_feedback_endpoint():
+    data = request.get_json() or {}
+    feedback_id = (data.get('feedback_id') or '').strip()
+    reply = (data.get('reply') or '').strip()
+    replied_by = data.get('replied_by', 'admin')
+    if not feedback_id or not reply:
+        return make_response(False, error='Missing feedback_id or reply', status_code=400)
+    ok = reply_to_feedback(feedback_id, reply, replied_by=replied_by)
+    if not ok:
+        return make_response(False, error='Failed to save reply', status_code=500)
+    return make_response(True, {'message': 'Reply saved'})
 
 
 if __name__ == '__main__':
